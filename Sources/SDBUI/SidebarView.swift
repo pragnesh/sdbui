@@ -96,28 +96,7 @@ struct SchemaPanel: View {
             GeometryReader { _ in
                 TableBrowser(model: model)
             }
-            .onChange(of: model.selectedTableID) {
-                model.openSelectedTable()
-            }
-
-            if let table = model.selectedTable, !model.selectedTableColumns.isEmpty {
-                Divider()
-                Text("Columns of \(table.name)").font(.headline)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.selectedTableColumns, id: \.name) { column in
-                            HStack {
-                                Text(column.name)
-                                Spacer()
-                                Text(column.type)
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                            }
-                        }
-                    }
-                }
-                .frame(height: 180)
-            }
+            TableColumnsPanel(model: model)
         }
     }
 }
@@ -157,7 +136,13 @@ struct TableBrowser: View {
             Toggle("Show system schemas", isOn: model.binding(\.showSystemSchemas))
 
             ScrollView {
-                List(shown, selection: model.binding(\.selectedTableID)) { table in
+                List(
+                    shown,
+                    selection: Binding(
+                        get: { model.selectedTableID },
+                        set: { model.selectTable($0) }
+                    )
+                ) { table in
                     Text(model.label(for: table))
                         .lineLimit(1)
                 }
@@ -167,6 +152,38 @@ struct TableBrowser: View {
                 Text("Showing \(shown.count) of \(tables.count); type to filter.")
                     .font(.caption)
                     .foregroundColor(.gray)
+            }
+        }
+    }
+}
+
+/// Columns of the selected table.
+struct TableColumnsPanel: View {
+    var model: BrowserModel
+    /// Bumped when the model's query state changes; see `onQueryStateChange`.
+    @State private var queryStateRevision = 0
+
+    var body: some View {
+        let _ = queryStateRevision
+        let _ = model.onQueryStateChange("columns") { queryStateRevision &+= 1 }
+        VStack(alignment: .leading, spacing: 8) {
+            if let table = model.selectedTable, !model.selectedTableColumns.isEmpty {
+                Divider()
+                Text("Columns of \(table.name)").font(.headline)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.selectedTableColumns, id: \.name) { column in
+                            HStack {
+                                Text(column.name)
+                                Spacer()
+                                Text(column.type)
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                    }
+                }
+                .frame(height: 180)
             }
         }
     }

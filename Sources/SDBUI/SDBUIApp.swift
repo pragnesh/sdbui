@@ -22,11 +22,18 @@ struct SDBUIApp: App {
 
     var body: some Scene {
         WindowGroup("SDB Query Browser") {
+            // Each pane sits in a GeometryReader, which is exactly the size
+            // it's offered, so a pane's content changing size re-lays-out
+            // only that pane.
             NavigationSplitView {
-                SidebarView(model: model)
-                    .frame(minWidth: 280)
+                GeometryReader { _ in
+                    SidebarView(model: model)
+                }
+                .frame(minWidth: 280)
             } detail: {
-                QueryView(model: model)
+                GeometryReader { _ in
+                    QueryView(model: model)
+                }
             }
             .onAppear {
                 model.reloadDiscovery()

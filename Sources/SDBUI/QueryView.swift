@@ -25,10 +25,14 @@ struct QueryView: View {
 
 struct QueryToolbar: View {
     var model: BrowserModel
+    /// Bumped when the model's query state changes; see `onQueryStateChange`.
+    @State private var queryStateRevision = 0
 
     @Environment(\.chooseFileSaveDestination) var chooseFileSaveDestination
 
     var body: some View {
+        let _ = queryStateRevision
+        let _ = model.onQueryStateChange("toolbar") { queryStateRevision &+= 1 }
         HStack {
             Button(model.isRunning ? "Running…" : "Run") { model.runQuery() }
                 .disabled(!model.canRun)
@@ -54,10 +58,14 @@ struct QueryToolbar: View {
 
 struct SQLEditor: View {
     var model: BrowserModel
+    /// Bumped when the model's query state changes; see `onQueryStateChange`.
+    @State private var queryStateRevision = 0
 
     var body: some View {
-        // Re-render only when code replaces the text, not on every keystroke.
-        let _ = model.sqlRevision
+        // Re-render only when code replaces the text (which bumps
+        // `sqlRevision`), not on every keystroke.
+        let _ = queryStateRevision
+        let _ = model.onQueryStateChange("editor") { queryStateRevision &+= 1 }
         TextEditor(text: model.binding(\.sql))
             .font(.system(size: 13, design: .monospaced))
             .padding(4)
@@ -69,8 +77,12 @@ struct SQLEditor: View {
 
 struct StatusLine: View {
     var model: BrowserModel
+    /// Bumped when the model's query state changes; see `onQueryStateChange`.
+    @State private var queryStateRevision = 0
 
     var body: some View {
+        let _ = queryStateRevision
+        let _ = model.onQueryStateChange("status") { queryStateRevision &+= 1 }
         VStack(alignment: .leading, spacing: 4) {
             Text(model.statusMessage)
                 .font(.caption)
@@ -85,8 +97,12 @@ struct StatusLine: View {
 
 struct ResultsPane: View {
     var model: BrowserModel
+    /// Bumped when the model's query state changes; see `onQueryStateChange`.
+    @State private var queryStateRevision = 0
 
     var body: some View {
+        let _ = queryStateRevision
+        let _ = model.onQueryStateChange("results") { queryStateRevision &+= 1 }
         if let result = model.result, !result.columns.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 ResultGrid(header: model.gridHeader, rows: model.gridBody)

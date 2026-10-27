@@ -34,30 +34,66 @@ final class BrowserModel {
     @ObservationIgnored var tableFilterDraft = ""
     @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
     var showSystemSchemas = false
-    var selectedTableID: String?
-    var selectedTableColumns: [ResultColumn] = []
+    @ObservationIgnored private(set) var selectedTableID: String? { didSet { queryStateChanged() } }
+    @ObservationIgnored private(set) var selectedTableColumns: [ResultColumn] = [] {
+        didSet { queryStateChanged() }
+    }
 
     // MARK: Editor and results
+    //
+    // This state changes on every query, so it isn't `@Observable`: SwiftCrossUI's
+    // observation merges child views' reads into their ancestors, so changing
+    // an observed property re-renders and re-lays-out the whole window. The
+    // views that show it subscribe with ``onQueryStateChange(_:_:)`` instead
+    // and re-render on their own.
 
     /// The editor's text. Not observed: the GTK text view owns the live text,
     /// and observing every keystroke made SwiftCrossUI re-layout the whole
     /// window per key. Code that replaces the text calls ``setSQL(_:)``.
     @ObservationIgnored var sql = ""
     /// Bumped by ``setSQL(_:)`` so the editor picks up programmatic changes.
-    private(set) var sqlRevision = 0
-    var isRunning = false
-    var result: QueryResult?
-    private(set) var page = 0
+    @ObservationIgnored private(set) var sqlRevision = 0 { didSet { queryStateChanged() } }
+    @ObservationIgnored private(set) var isRunning = false { didSet { queryStateChanged() } }
+    @ObservationIgnored private(set) var result: QueryResult? { didSet { queryStateChanged() } }
+    @ObservationIgnored private(set) var page = 0 { didSet { queryStateChanged() } }
     /// The current page rendered as monospaced text (see ``ResultText``).
-    private(set) var gridHeader = ""
-    private(set) var gridBody = ""
+    @ObservationIgnored private(set) var gridHeader = "" { didSet { queryStateChanged() } }
+    @ObservationIgnored private(set) var gridBody = "" { didSet { queryStateChanged() } }
     @ObservationIgnored private var columnWidths: [Int] = []
     var maxRows: Int? = 10_000
     let pageSize = 100
     let maxRowsOptions = [100, 1_000, 10_000, 100_000]
 
-    var statusMessage = "Not connected"
-    var errorMessage: String?
+    @ObservationIgnored private(set) var statusMessage = "Not connected" {
+        didSet { queryStateChanged() }
+    }
+    @ObservationIgnored private(set) var errorMessage: String? { didSet { queryStateChanged() } }
+
+    @ObservationIgnored private var queryStateSubscribers: [String: @MainActor () -> Void] = [:]
+    @ObservationIgnored private var queryStateNotificationPending = false
+
+    /// Call `update` (once per batch of changes) whenever query state changes.
+    /// Re-registering under the same `key` replaces the previous callback.
+    func onQueryStateChange(_ key: String, _ update: @escaping @MainActor () -> Void) {
+        queryStateSubscribers[key] = update
+    }
+
+    private func queryStateChanged() {
+        guard !queryStateNotificationPending else { return }
+        queryStateNotificationPending = true
+        Task { @MainActor in
+            queryStateNotificationPending = false
+            for update in queryStateSubscribers.values {
+                update()
+            }
+        }
+    }
+
+    func selectTable(_ id: String?) {
+        guard id != selectedTableID else { return }
+        selectedTableID = id
+        openSelectedTable()
+    }
 
     static let systemSchemas: Set<String> = [
         "information_schema", "pg_catalog", "pg_toast", "mysql", "performance_schema", "sys",
