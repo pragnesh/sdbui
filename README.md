@@ -38,7 +38,8 @@ this project includes a tiny equivalent:
 - Schema browser via `AdbcConnectionGetObjects` with filter and system-schema toggle;
   clicking a table previews it and shows its columns
 - SQL editor, Run / Cancel (`AdbcConnectionCancel`), row limit
-- Results grid with typed headers, NULL styling, paging (100 rows/page)
+- Results as a monospaced, selectable text grid with typed headers and
+  paging (100 rows/page)
 - Arrow types: ints, floats, bool, utf8/large/view, binary, decimal128/256,
   date/time/timestamp (with time zones), duration, interval, list, struct, map,
   union, dictionary
@@ -68,5 +69,17 @@ Profiles that go through SSH tunnels need the tunnels running first
 
 - One statement per Run (drivers generally reject multi-statement strings).
 - Results keep at most "Max rows" rows; cells are cut at 500 characters
-  (also in the CSV export).
-- The grid is built from stacks; large pages of very wide results are slow.
+  (also in the CSV export) and at 48 characters in the grid.
+- The sidebar lists at most 300 tables; use the filter to find others.
+
+## Performance notes
+
+SwiftCrossUI re-lays-out a view and its children when observed state changes,
+and size changes bubble up to the window. So the UI keeps the widget count
+small (results are one text label per page, not one view per cell), keeps the
+editor's text out of observation, and splits views so each reads only what it
+shows.
+
+To reproduce a session for profiling, launch with
+`SDBUI_PROFILE=<profile> SDBUI_SQL="<query>" swift run sdbui`: it connects and
+runs the query on startup.

@@ -19,6 +19,7 @@ struct SDBUIApp: App {
             }
             .onAppear {
                 model.reloadDiscovery()
+                model.applyLaunchEnvironment()
             }
         }
         .defaultSize(width: 1200, height: 800)

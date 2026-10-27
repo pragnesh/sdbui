@@ -37,10 +37,19 @@ final class BrowserModel {
 
     // MARK: Editor and results
 
-    var sql = ""
+    /// The editor's text. Not observed: the GTK text view owns the live text,
+    /// and observing every keystroke made SwiftCrossUI re-layout the whole
+    /// window per key. Code that replaces the text calls ``setSQL(_:)``.
+    @ObservationIgnored var sql = ""
+    /// Bumped by ``setSQL(_:)`` so the editor picks up programmatic changes.
+    private(set) var sqlRevision = 0
     var isRunning = false
     var result: QueryResult?
-    var page = 0
+    private(set) var page = 0
+    /// The current page rendered as monospaced text (see ``ResultText``).
+    private(set) var gridHeader = ""
+    private(set) var gridBody = ""
+    @ObservationIgnored private var columnWidths: [Int] = []
     var maxRows: Int? = 10_000
     let pageSize = 100
     let maxRowsOptions = [100, 1_000, 10_000, 100_000]
@@ -61,6 +70,22 @@ final class BrowserModel {
             directDriver = drivers.first
         }
     }
+
+    /// `SDBUI_PROFILE=<name> [SDBUI_SQL=<query>]` connects (and runs the
+    /// query) on launch — handy for scripting and profiling.
+    func applyLaunchEnvironment() {
+        let environment = ProcessInfo.processInfo.environment
+        if let query = environment["SDBUI_SQL"] {
+            setSQL(query)
+            runOnConnect = true
+        }
+        if let profile = environment["SDBUI_PROFILE"] {
+            selectedProfileID = profile
+            connectSelectedProfile()
+        }
+    }
+
+    @ObservationIgnored private var runOnConnect = false
 
     // MARK: Connecting
 
@@ -94,16 +119,20 @@ final class BrowserModel {
                 case .success(let connection):
                     self.connection = connection
                     connectionTitle = title
-                    result = nil
+                    show(nil)
                     tables = []
                     selectedTableID = nil
                     let vendor = [connection.vendorName, connection.vendorVersion]
                         .compactMap { $0 }.joined(separator: " ")
                     statusMessage = vendor.isEmpty ? "Connected" : "Connected to \(vendor)"
                     if sql.isEmpty {
-                        sql = "SELECT 1"
+                        setSQL("SELECT 1")
                     }
                     refreshTables()
+                    if runOnConnect {
+                        runOnConnect = false
+                        runQuery()
+                    }
                 case .failure(let error):
                     statusMessage = "Connection failed"
                     errorMessage = "\(error)"
@@ -116,7 +145,7 @@ final class BrowserModel {
         tables = []
         selectedTableID = nil
         selectedTableColumns = []
-        result = nil
+        show(nil)
         statusMessage = "Not connected"
     }
 
@@ -170,7 +199,7 @@ final class BrowserModel {
             selectedTableColumns = []
             return
         }
-        sql = "SELECT * FROM \(connection.qualifiedName(of: table)) LIMIT \(pageSize)"
+        setSQL("SELECT * FROM \(connection.qualifiedName(of: table)) LIMIT \(pageSize)")
         runQuery()
 
         Task {
@@ -184,12 +213,20 @@ final class BrowserModel {
 
     var canRun: Bool {
         connection != nil && !isRunning
-            && !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func setSQL(_ text: String) {
+        sql = text
+        sqlRevision += 1
     }
 
     func runQuery() {
         guard let connection, canRun else { return }
         var statement = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !statement.isEmpty else {
+            statusMessage = "Nothing to run"
+            return
+        }
         while statement.hasSuffix(";") {
             statement = String(statement.dropLast()).trimmingCharacters(in: .whitespaces)
         }
@@ -207,8 +244,7 @@ final class BrowserModel {
 
             switch outcome {
                 case .success(let result):
-                    self.result = result
-                    page = 0
+                    show(result)
                     statusMessage = summary(of: result)
                 case .failure(let error):
                     statusMessage = "Query failed"
@@ -245,6 +281,18 @@ final class BrowserModel {
 
     // MARK: Paging
 
+    private func show(_ result: QueryResult?) {
+        self.result = result
+        columnWidths = result.map(ResultText.columnWidths(of:)) ?? []
+        gridHeader = result.map { ResultText.header(of: $0, widths: columnWidths) } ?? ""
+        showPage(0)
+    }
+
+    func showPage(_ page: Int) {
+        self.page = max(0, min(page, pageCount - 1))
+        gridBody = result.map { ResultText.body(of: $0, rows: pageRange, widths: columnWidths) } ?? ""
+    }
+
     var pageCount: Int {
         guard let result, !result.rows.isEmpty else { return 1 }
         return (result.rows.count + pageSize - 1) / pageSize
@@ -277,5 +325,25 @@ final class BrowserModel {
         } catch {
             errorMessage = "Export failed: \(error.localizedDescription)"
         }
+    }
+}
+
+extension BrowserModel {
+    /// A binding that ignores writes of an unchanged value.
+    ///
+    /// `@Observable` notifies on every assignment, even of an equal value, and
+    /// some controls (e.g. `Picker`) write their binding back while being
+    /// updated, which would trigger an extra re-render each time.
+    func binding<Value: Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<BrowserModel, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { self[keyPath: keyPath] },
+            set: { newValue in
+                if self[keyPath: keyPath] != newValue {
+                    self[keyPath: keyPath] = newValue
+                }
+            }
+        )
     }
 }

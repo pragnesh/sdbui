@@ -33,7 +33,7 @@ struct ConnectionPanel: View {
                     .foregroundColor(.gray)
             } else {
                 ScrollView {
-                    List(model.profiles, selection: $model.selectedProfileID) { profile in
+                    List(model.profiles, selection: model.binding(\.selectedProfileID)) { profile in
                         VStack(alignment: .leading, spacing: 0) {
                             Text(profile.id)
                             Text("\(profile.driver) · \(profile.summary)")
@@ -60,10 +60,10 @@ struct ConnectionPanel: View {
             } else {
                 HStack {
                     Text("Driver")
-                    Picker(of: model.drivers, selection: $model.directDriver)
+                    Picker(of: model.drivers, selection: model.binding(\.directDriver))
                 }
             }
-            TextField("postgresql://user:pass@host:5432/db", text: $model.directURI)
+            TextField("postgresql://user:pass@host:5432/db", text: model.binding(\.directURI))
             Button("Connect") {
                 model.connectDirect()
             }
@@ -74,6 +74,9 @@ struct ConnectionPanel: View {
 
 struct SchemaPanel: View {
     @Bindable var model: BrowserModel
+
+    /// Every row is a set of GTK widgets; thousands of them make layout slow.
+    static let tableLimit = 300
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -90,16 +93,18 @@ struct SchemaPanel: View {
 
             Divider()
 
+            let tables = model.visibleTables
+            let shown = Array(tables.prefix(Self.tableLimit))
             HStack {
-                Text("Tables (\(model.visibleTables.count))").font(.headline)
+                Text("Tables (\(tables.count))").font(.headline)
                 Spacer()
                 Button("Refresh") { model.refreshTables() }
             }
-            TextField("Filter tables", text: $model.tableFilter)
-            Toggle("Show system schemas", isOn: $model.showSystemSchemas)
+            TextField("Filter tables", text: model.binding(\.tableFilter))
+            Toggle("Show system schemas", isOn: model.binding(\.showSystemSchemas))
 
             ScrollView {
-                List(model.visibleTables, selection: $model.selectedTableID) { table in
+                List(shown, selection: model.binding(\.selectedTableID)) { table in
                     Text(model.label(for: table))
                         .lineLimit(1)
                 }
@@ -107,6 +112,11 @@ struct SchemaPanel: View {
             .frame(maxHeight: .infinity)
             .onChange(of: model.selectedTableID) {
                 model.openSelectedTable()
+            }
+            if tables.count > shown.count {
+                Text("Showing \(shown.count) of \(tables.count); type to filter.")
+                    .font(.caption)
+                    .foregroundColor(.gray)
             }
 
             if let table = model.selectedTable, !model.selectedTableColumns.isEmpty {
