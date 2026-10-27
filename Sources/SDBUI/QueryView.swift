@@ -124,17 +124,49 @@ struct ResultGrid: View {
     var header: String
     var rows: String
 
+    /// Last real size of the viewport, used to pad the content to fill it.
+    @State private var viewportWidth = 0.0
+    @State private var viewportHeight = 0.0
+
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(header)
-                    .fontWeight(.bold)
-                Divider()
-                Text(rows)
-                    .textSelectionEnabled()
+        GeometryReader { proxy in
+            let _ = remember(proxy.size)
+            ScrollView([.horizontal, .vertical]) {
+                // A two-axis ScrollView centres content smaller than itself, so
+                // invisible struts make the content at least viewport-sized and
+                // the stacks pin the grid to the top-leading corner.
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(header)
+                                .fontWeight(.bold)
+                            Divider()
+                            Text(rows)
+                                .textSelectionEnabled()
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(4)
+                        Color.clear.frame(width: 1, height: max(viewportHeight - 2, 1))
+                    }
+                    Color.clear.frame(width: max(viewportWidth - 2, 1), height: 1)
+                }
             }
-            .font(.system(size: 12, design: .monospaced))
-            .padding(4)
+        }
+    }
+
+    /// The strut sizes can't come straight from the proxy: a ScrollView keeps
+    /// its content's first layout of an update (its proposal never changes),
+    /// and the first pass sees a probing size. So keep the real size in state
+    /// and apply it on the next update, where every pass agrees.
+    private func remember(_ size: ViewSize) {
+        let width = size.width
+        let height = size.height
+        guard width.isFinite, height.isFinite, width > 0, height > 0,
+            width != viewportWidth || height != viewportHeight
+        else { return }
+        Task { @MainActor in
+            viewportWidth = width
+            viewportHeight = height
         }
     }
 }
