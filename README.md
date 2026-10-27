@@ -70,7 +70,7 @@ Profiles that go through SSH tunnels need the tunnels running first
 - One statement per Run (drivers generally reject multi-statement strings).
 - Results keep at most "Max rows" rows; cells are cut at 500 characters
   (also in the CSV export) and at 48 characters in the grid.
-- The sidebar lists at most 300 tables; use the filter to find others.
+- The sidebar lists at most 50 tables; use the filter to find others.
 
 ## Performance notes
 

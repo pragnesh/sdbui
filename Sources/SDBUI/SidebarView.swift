@@ -75,8 +75,10 @@ struct ConnectionPanel: View {
 struct SchemaPanel: View {
     @Bindable var model: BrowserModel
 
-    /// Every row is a set of GTK widgets; thousands of them make layout slow.
-    static let tableLimit = 300
+    /// Any layout change in the query pane re-lays-out the whole window,
+    /// including this list, so its rows cost time on every query run: about
+    /// 4.5s with 300 rows vs 1.3s with 50 (debug build). Filter to find others.
+    static let tableLimit = 50
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
