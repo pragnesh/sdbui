@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+*.o
+swiftly-*.tar.gz
+LICENSE.txt
