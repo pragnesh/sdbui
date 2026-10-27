@@ -75,11 +75,6 @@ struct ConnectionPanel: View {
 struct SchemaPanel: View {
     @Bindable var model: BrowserModel
 
-    /// Any layout change in the query pane re-lays-out the whole window,
-    /// including this list, so its rows cost time on every query run: about
-    /// 4.5s with 300 rows vs 1.3s with 50 (debug build). Filter to find others.
-    static let tableLimit = 50
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -95,30 +90,14 @@ struct SchemaPanel: View {
 
             Divider()
 
-            let tables = model.visibleTables
-            let shown = Array(tables.prefix(Self.tableLimit))
-            HStack {
-                Text("Tables (\(tables.count))").font(.headline)
-                Spacer()
-                Button("Refresh") { model.refreshTables() }
+            // A GeometryReader is exactly the size it's offered, whatever its
+            // content does, so filtering or re-listing tables re-lays-out
+            // only this part instead of the whole window.
+            GeometryReader { _ in
+                TableBrowser(model: model)
             }
-            TextField("Filter tables", text: model.binding(\.tableFilterDraft))
-            Toggle("Show system schemas", isOn: model.binding(\.showSystemSchemas))
-
-            ScrollView {
-                List(shown, selection: model.binding(\.selectedTableID)) { table in
-                    Text(model.label(for: table))
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxHeight: .infinity)
             .onChange(of: model.selectedTableID) {
                 model.openSelectedTable()
-            }
-            if tables.count > shown.count {
-                Text("Showing \(shown.count) of \(tables.count); type to filter.")
-                    .font(.caption)
-                    .foregroundColor(.gray)
             }
 
             if let table = model.selectedTable, !model.selectedTableColumns.isEmpty {
@@ -138,6 +117,56 @@ struct SchemaPanel: View {
                     }
                 }
                 .frame(height: 180)
+            }
+        }
+    }
+}
+
+/// Table count, filter and the (capped) table list.
+struct TableBrowser: View {
+    var model: BrowserModel
+
+    /// The applied filter. It's view-local `@State` rather than a model
+    /// property on purpose: SwiftCrossUI's observation merges the reads of
+    /// child views into their ancestors, so changing an `@Observable` model
+    /// property re-renders the whole window, while `@State` updates only this
+    /// view (and the GeometryReader around it stops the relayout here).
+    @State private var filter = ""
+
+    /// Every row costs layout time whenever this list is laid out (about
+    /// 4.5s with 300 rows vs 1.3s with 50 in a debug build). Filter to find
+    /// others.
+    static let tableLimit = 50
+
+    var body: some View {
+        let tables = model.visibleTables(matching: filter)
+        let shown = Array(tables.prefix(Self.tableLimit))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Tables (\(tables.count))").font(.headline)
+                Spacer()
+                Button("Refresh") { model.refreshTables() }
+            }
+            TextField(
+                "Filter tables",
+                text: Binding(
+                    get: { model.tableFilterDraft },
+                    set: { text in model.editTableFilter(text) { filter = $0 } }
+                )
+            )
+            Toggle("Show system schemas", isOn: model.binding(\.showSystemSchemas))
+
+            ScrollView {
+                List(shown, selection: model.binding(\.selectedTableID)) { table in
+                    Text(model.label(for: table))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            if tables.count > shown.count {
+                Text("Showing \(shown.count) of \(tables.count); type to filter.")
+                    .font(.caption)
+                    .foregroundColor(.gray)
             }
         }
     }

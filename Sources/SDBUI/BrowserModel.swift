@@ -30,13 +30,8 @@ final class BrowserModel {
     // MARK: Schema browser
 
     var tables: [TableInfo] = []
-    /// The filter applied to the table list.
-    private(set) var tableFilter = ""
-    /// What's typed in the filter field. Not observed: each applied filter
-    /// change re-lays-out the whole window, so it's applied after a pause.
-    @ObservationIgnored var tableFilterDraft = "" {
-        didSet { scheduleTableFilter() }
-    }
+    /// What's typed in the table filter field; see ``TableBrowser``.
+    @ObservationIgnored var tableFilterDraft = ""
     @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
     var showSystemSchemas = false
     var selectedTableID: String?
@@ -164,8 +159,8 @@ final class BrowserModel {
             .joined(separator: " ")
     }
 
-    var visibleTables: [TableInfo] {
-        let filter = tableFilter.trimmingCharacters(in: .whitespaces).lowercased()
+    func visibleTables(matching filter: String) -> [TableInfo] {
+        let filter = filter.trimmingCharacters(in: .whitespaces).lowercased()
         return tables.filter { table in
             (showSystemSchemas || !Self.systemSchemas.contains(table.namespace.lowercased()))
                 && (filter.isEmpty || table.name.lowercased().contains(filter)
@@ -173,12 +168,14 @@ final class BrowserModel {
         }
     }
 
-    private func scheduleTableFilter() {
+    /// Record a filter keystroke and call `apply` once typing pauses.
+    func editTableFilter(_ text: String, apply: @escaping @MainActor (String) -> Void) {
+        tableFilterDraft = text
         tableFilterTask?.cancel()
         tableFilterTask = Task {
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled, tableFilter != tableFilterDraft else { return }
-            tableFilter = tableFilterDraft
+            guard !Task.isCancelled else { return }
+            apply(text)
         }
     }
 
