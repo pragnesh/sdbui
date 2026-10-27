@@ -30,7 +30,14 @@ final class BrowserModel {
     // MARK: Schema browser
 
     var tables: [TableInfo] = []
-    var tableFilter = ""
+    /// The filter applied to the table list.
+    private(set) var tableFilter = ""
+    /// What's typed in the filter field. Not observed: each applied filter
+    /// change re-lays-out the whole window, so it's applied after a pause.
+    @ObservationIgnored var tableFilterDraft = "" {
+        didSet { scheduleTableFilter() }
+    }
+    @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
     var showSystemSchemas = false
     var selectedTableID: String?
     var selectedTableColumns: [ResultColumn] = []
@@ -163,6 +170,15 @@ final class BrowserModel {
             (showSystemSchemas || !Self.systemSchemas.contains(table.namespace.lowercased()))
                 && (filter.isEmpty || table.name.lowercased().contains(filter)
                     || table.namespace.lowercased().contains(filter))
+        }
+    }
+
+    private func scheduleTableFilter() {
+        tableFilterTask?.cancel()
+        tableFilterTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, tableFilter != tableFilterDraft else { return }
+            tableFilter = tableFilterDraft
         }
     }
 

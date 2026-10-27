@@ -102,7 +102,7 @@ struct SchemaPanel: View {
                 Spacer()
                 Button("Refresh") { model.refreshTables() }
             }
-            TextField("Filter tables", text: model.binding(\.tableFilter))
+            TextField("Filter tables", text: model.binding(\.tableFilterDraft))
             Toggle("Show system schemas", isOn: model.binding(\.showSystemSchemas))
 
             ScrollView {
