@@ -3,3 +3,4 @@
 *.o
 swiftly-*.tar.gz
 LICENSE.txt
+dist/

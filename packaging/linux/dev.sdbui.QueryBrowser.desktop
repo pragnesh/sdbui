@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SDB Query Browser
+GenericName=Database Query Browser
+Comment=Browse and query databases through ADBC drivers
+Exec=sdbui
+Icon=dev.sdbui.QueryBrowser
+Terminal=false
+Categories=Development;Database;
+Keywords=SQL;database;query;ADBC;PostgreSQL;MySQL;
+StartupNotify=true

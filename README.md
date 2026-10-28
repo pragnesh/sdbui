@@ -62,6 +62,26 @@ swift test
 swift run sdbui
 ```
 
+## Release packages (Linux)
+
+```sh
+scripts/package-linux.sh            # version from the latest vX.Y.Z tag (else 0.1.0)
+scripts/package-linux.sh --version 1.2.0 --no-deb
+```
+
+This builds a release binary with the Swift runtime linked statically and
+writes to `dist/`:
+
+- `sdbui-<version>-linux-<arch>.tar.gz`: unpack and run `./install.sh`
+  (installs to `~/.local`; `sudo ./install.sh --prefix /usr/local` for all
+  users). Uninstall with `<prefix>/share/sdbui/uninstall.sh`.
+- `sdbui_<version>_<arch>.deb`: `sudo apt install ./sdbui_*.deb`.
+- `SHA256SUMS`.
+
+Target machines need GTK 4 (`libgtk-4-1`) and ADBC drivers installed with
+dbc. The first release build compiles all dependencies with optimisation
+and takes around 10 minutes; later ones are incremental.
+
 Profiles that go through SSH tunnels need the tunnels running first
 (e.g. `~/.config/adbc/profiles/tunnels.sh`).
 
