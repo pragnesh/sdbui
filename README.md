@@ -100,6 +100,11 @@ writes to `dist/`:
 - `sdbui_<version>_<arch>.deb`: `sudo apt install ./sdbui_*.deb`.
 - `SHA256SUMS`.
 
+On GitHub, `.github/workflows/release.yml` does the same on Ubuntu 24.04:
+push a tag (`git tag v0.2.0 && git push origin v0.2.0`) to publish a
+GitHub Release with the packages, or run the workflow manually to get them
+as a build artifact. The Swift version comes from `.swift-version`.
+
 Target machines need GTK 4 (`libgtk-4-1`) and ADBC drivers installed with
 dbc. The first release build compiles all dependencies with optimisation
 and takes around 10 minutes; later ones are incremental.

@@ -1,0 +1,82 @@
+name: Release
+
+# Builds, tests and packages SDB Query Browser for Linux (x86_64).
+# - Push a tag like v0.2.0 to publish a GitHub Release with the packages.
+# - Or run it manually (Actions → Release → Run workflow) to get the
+#   packages as a build artifact without publishing a release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags are needed for the default version (git describe).
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # Swift toolchain requirements on Ubuntu 24.04, plus GTK 4.
+          sudo apt-get install -y --no-install-recommends \
+            binutils git gnupg2 libc6-dev libcurl4-openssl-dev libedit2 \
+            libgcc-13-dev libncurses-dev libpython3-dev libsqlite3-0 \
+            libstdc++-13-dev libxml2-dev libz3-dev pkg-config tzdata unzip \
+            zlib1g-dev libgtk-4-dev
+
+      - name: Install Swift (version from .swift-version)
+        run: |
+          curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"
+          tar zxf "swiftly-$(uname -m).tar.gz"
+          ./swiftly init --quiet-shell-followup --assume-yes --skip-install
+          . "$HOME/.local/share/swiftly/env.sh"
+          swiftly install --use --assume-yes "$(cat .swift-version)"
+          # Make swiftly's environment available to later steps.
+          env | grep '^SWIFTLY_' >> "$GITHUB_ENV"
+          echo "$SWIFTLY_BIN_DIR" >> "$GITHUB_PATH"
+          rm -f swiftly "swiftly-$(uname -m).tar.gz"
+
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: build-${{ runner.os }}-${{ hashFiles('.swift-version', 'Package.resolved') }}
+          restore-keys: build-${{ runner.os }}-
+
+      - name: Test
+        run: swift test
+
+      - name: Build release packages
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            scripts/package-linux.sh --version "${GITHUB_REF_NAME#v}"
+          else
+            scripts/package-linux.sh
+          fi
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdbui-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+          generate_release_notes: true
