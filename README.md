@@ -37,18 +37,19 @@ this project includes a tiny equivalent:
 The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
 
 - **Toolbar:** database (MySQL) or schema (PostgreSQL) selector and the
-  Structure / Content / Table Info / Query tabs
+  Query / Structure / Table Info tabs
 - **Sidebar:** the selected database's tables (via `AdbcConnectionGetObjects`)
   with a filter
-- **Content:** browse a table 1000 rows at a time (server-side `LIMIT`/`OFFSET`)
-  with a column / operator / value filter bar; click a header to sort
-  (`ORDER BY`)
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
 - **Table Info:** engine, row estimate, sizes, collation, … and the
   `CREATE TABLE` statement (MySQL)
-- **Query:** SQL editor; Ctrl+Enter runs the selection or the statement at
-  the cursor, Run All runs every statement; Cancel (`AdbcConnectionCancel`),
-  row limit, CSV export
+- **Query:** SQL editor with results below. Clicking a table puts
+  ``SELECT * FROM `db`.`table` LIMIT 1000`` in the editor and runs it, with a
+  column / operator / value filter bar and Previous/Next paging; filtering,
+  paging and header sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`,
+  `ORDER BY`). Ctrl+Enter runs the selection or the statement at the cursor,
+  Run All runs every statement; Cancel (`AdbcConnectionCancel`), row limit,
+  CSV export
 
 Results are shown in a virtualized grid (GTK `GtkColumnView`): only the
 visible cells are formatted and drawn, so large results scroll smoothly.

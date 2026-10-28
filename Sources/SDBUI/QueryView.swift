@@ -2,7 +2,8 @@ import ADBCKit
 import Foundation
 import SwiftCrossUI
 
-/// The Query tab: SQL editor, toolbar and paged results.
+/// The Query tab: toolbar, SQL editor and results. Clicking a table browses
+/// it here, with a filter bar above the results and a pager below.
 struct QueryTab: View {
     var model: BrowserModel
 
@@ -10,12 +11,13 @@ struct QueryTab: View {
         VStack(alignment: .leading, spacing: 8) {
             QueryToolbar(model: model)
             SQLEditor(model: model)
-            Divider()
+            FilterBar(model: model)
             PaneGrid(
                 model: model, pane: model.queryPane, key: "query-grid",
-                emptyText: "Write a query and press Run."
+                emptyText: "Click a table, or write a query and press Run All."
             )
             .frame(maxHeight: .infinity)
+            ContentPager(model: model)
         }
         .padding()
     }

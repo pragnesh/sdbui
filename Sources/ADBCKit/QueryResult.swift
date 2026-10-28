@@ -122,7 +122,7 @@ class ResultStorage: @unchecked Sendable {
     func text(row: Int, column: Int) -> String? { nil }
 }
 
-final class StringStorage: ResultStorage {
+final class StringStorage: ResultStorage, @unchecked Sendable {
     private let rows: [[String?]]
 
     init(rows: [[String?]]) {
@@ -138,7 +138,7 @@ final class StringStorage: ResultStorage {
 
 /// Arrow record batches owned until the result is discarded. Values are
 /// decoded and formatted per cell, on demand.
-final class ArrowStorage: ResultStorage {
+final class ArrowStorage: ResultStorage, @unchecked Sendable {
     private var arrays: [ArrowArray]
     private let batches: [ArrowArrayView]
     /// The first row of each batch.

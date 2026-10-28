@@ -191,8 +191,6 @@ struct TabContent: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity)
-        } else if model.selectedTab == .content {
-            ContentTab(model: model)
         } else if model.selectedTab == .structure {
             StructureTab(model: model)
         } else {
@@ -275,23 +273,10 @@ struct PaneGrid: View {
     }
 }
 
-// MARK: - Content tab
+// MARK: - Table browsing controls (shown in the Query tab)
 
-struct ContentTab: View {
-    var model: BrowserModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            FilterBar(model: model)
-            PaneGrid(model: model, pane: model.contentPane, key: "content-grid")
-                .frame(maxHeight: .infinity)
-            ContentPager(model: model)
-        }
-        .padding()
-    }
-}
-
-/// Sequel Ace's content filter: column, operator, value.
+/// Sequel Ace's content filter (column, operator, value), shown while the
+/// Query tab is browsing a table.
 struct FilterBar: View {
     var model: BrowserModel
     @State private var revision = 0
@@ -302,7 +287,7 @@ struct FilterBar: View {
             "filter",
             of: {
                 [
-                    AnyHashable(model.contentColumns), model.filterColumn,
+                    AnyHashable(model.isBrowsing), model.contentColumns, model.filterColumn,
                     model.filterOperator?.rawValue, model.contentFilter == nil,
                 ]
             }
@@ -310,30 +295,32 @@ struct FilterBar: View {
             revision &+= 1
         }
         let columns = model.contentColumns
-        HStack(spacing: 8) {
-            Text("Filter")
-                .fixedSize()
-            Picker(
-                of: columns,
-                selection: Binding(
-                    get: { model.filterColumn ?? columns.first },
-                    set: { model.filterColumn = $0 }
+        if model.isBrowsing {
+            HStack(spacing: 8) {
+                Text("Filter")
+                    .fixedSize()
+                Picker(
+                    of: columns,
+                    selection: Binding(
+                        get: { model.filterColumn ?? columns.first },
+                        set: { model.filterColumn = $0 }
+                    )
                 )
-            )
-            .fixedSize()
-            Picker(of: SQLDialect.Filter.Operator.allCases, selection: model.binding(\.filterOperator))
                 .fixedSize()
-            TextField(
-                "Value",
-                text: Binding(get: { model.filterValue }, set: { model.filterValue = $0 })
-            )
-            .onSubmit { model.applyContentFilter() }
-            Button("Filter") { model.applyContentFilter() }
-                .disabled(columns.isEmpty)
-                .fixedSize()
-            Button("Clear") { model.clearContentFilter() }
-                .disabled(model.contentFilter == nil)
-                .fixedSize()
+                Picker(of: SQLDialect.Filter.Operator.allCases, selection: model.binding(\.filterOperator))
+                    .fixedSize()
+                TextField(
+                    "Value",
+                    text: Binding(get: { model.filterValue }, set: { model.filterValue = $0 })
+                )
+                .onSubmit { model.applyContentFilter() }
+                Button("Filter") { model.applyContentFilter() }
+                    .disabled(columns.isEmpty)
+                    .fixedSize()
+                Button("Clear") { model.clearContentFilter() }
+                    .disabled(model.contentFilter == nil)
+                    .fixedSize()
+            }
         }
     }
 }
@@ -346,20 +333,27 @@ struct ContentPager: View {
         let _ = revision
         let _ = model.watch(
             "content-pager",
-            of: { [model.contentOffset, model.contentHasMore ? 1 : 0, model.contentPane.revision] }
+            of: {
+                [
+                    model.isBrowsing ? 1 : 0, model.contentOffset, model.contentHasMore ? 1 : 0,
+                    model.queryPane.revision,
+                ]
+            }
         ) {
             revision &+= 1
         }
-        HStack {
-            Button("◀ Previous") { model.showContentPage(next: false) }
-                .disabled(model.contentOffset == 0)
-                .fixedSize()
-            Text(model.contentRowsLabel)
-                .fixedSize()
-            Button("Next ▶") { model.showContentPage(next: true) }
-                .disabled(!model.contentHasMore)
-                .fixedSize()
-            Spacer()
+        if model.isBrowsing {
+            HStack {
+                Button("◀ Previous") { model.showContentPage(next: false) }
+                    .disabled(model.contentOffset == 0)
+                    .fixedSize()
+                Text(model.contentRowsLabel)
+                    .fixedSize()
+                Button("Next ▶") { model.showContentPage(next: true) }
+                    .disabled(!model.contentHasMore)
+                    .fixedSize()
+                Spacer()
+            }
         }
     }
 }

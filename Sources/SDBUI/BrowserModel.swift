@@ -8,10 +8,10 @@ import SwiftCrossUI
 
 /// The tabs of the main window, as in Sequel Ace's toolbar.
 enum BrowserTab: String, CaseIterable, Hashable {
-    case structure = "Structure"
-    case content = "Content"
-    case info = "Table Info"
+    /// The SQL editor and results; clicking a table browses it here.
     case query = "Query"
+    case structure = "Structure"
+    case info = "Table Info"
 }
 
 /// All state for the query browser window.
@@ -53,7 +53,7 @@ final class BrowserModel {
     @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
 
     @ObservationIgnored private(set) var selectedTableID: String? { didSet { stateChanged() } }
-    @ObservationIgnored private(set) var selectedTab: BrowserTab = .content {
+    @ObservationIgnored private(set) var selectedTab: BrowserTab = .query {
         didSet { stateChanged() }
     }
     /// Which table each tab last loaded, so switching back doesn't reload.
@@ -61,15 +61,9 @@ final class BrowserModel {
 
     // MARK: Panes
 
-    /// Rows per Content page (as in Sequel Ace). The grid is virtualized, so
-    /// this mostly costs fetch time.
+    /// Rows per page when browsing a table (as in Sequel Ace). The grid is
+    /// virtualized, so this mostly costs fetch time.
     let pageSize = 1000
-    @ObservationIgnored private(set) lazy var contentPane: ResultPane = {
-        let pane = makePane()
-        // Content is paged from the server, so sorting is an ORDER BY.
-        pane.sortHandler = { [weak self] sort in self?.sortContent(by: sort) }
-        return pane
-    }()
     @ObservationIgnored private(set) lazy var structurePane = makePane()
     @ObservationIgnored private(set) lazy var indexPane = makePane()
     @ObservationIgnored private(set) lazy var infoPane: ResultPane = {
@@ -80,7 +74,22 @@ final class BrowserModel {
     @ObservationIgnored private(set) lazy var queryPane = makePane()
     @ObservationIgnored private(set) var createStatement = "" { didSet { stateChanged() } }
 
-    // MARK: Content browsing (server-side paging and filtering)
+    // MARK: Table browsing (in the Query tab, server-side paging and filtering)
+
+    /// Whether the Query tab's results come from browsing the selected table
+    /// (clicking it, then filtering, paging or sorting), rather than from SQL
+    /// the user ran. Shows the filter bar and pager, and makes header clicks
+    /// sort on the server.
+    @ObservationIgnored private(set) var isBrowsing = false {
+        didSet {
+            if isBrowsing {
+                queryPane.sortHandler = { [weak self] sort in self?.sortContent(by: sort) }
+            } else {
+                queryPane.sortHandler = nil
+            }
+            stateChanged()
+        }
+    }
 
     @ObservationIgnored private(set) var contentOffset = 0 { didSet { stateChanged() } }
     @ObservationIgnored private(set) var contentHasMore = false { didSet { stateChanged() } }
@@ -354,7 +363,7 @@ final class BrowserModel {
     }
 
     private func clearTablePanes() {
-        for pane in [contentPane, structurePane, indexPane, infoPane] {
+        for pane in [structurePane, indexPane, infoPane] {
             pane.show(nil)
         }
         createStatement = ""
@@ -369,20 +378,21 @@ final class BrowserModel {
 
     /// Reload what the current tab shows.
     func refreshCurrentTab() {
+        if selectedTab == .query && !isBrowsing {
+            runQuery()
+            return
+        }
         loadedTables[selectedTab] = nil
         loadCurrentTab()
     }
 
     private func loadCurrentTab() {
-        guard selectedTab != .query, let table = selectedTable,
-            loadedTables[selectedTab] != table.id
-        else { return }
+        guard let table = selectedTable, loadedTables[selectedTab] != table.id else { return }
         loadedTables[selectedTab] = table.id
         switch selectedTab {
-            case .content: loadContent(table)
+            case .query: loadContent(table)
             case .structure: loadStructure(table)
             case .info: loadInfo(table)
-            case .query: break
         }
     }
 
@@ -411,8 +421,10 @@ final class BrowserModel {
         }
     }
 
-    // MARK: Content tab
+    // MARK: Browsing a table in the Query tab
 
+    /// Shows one page of `table` in the Query tab: the SQL in the editor and
+    /// its rows below.
     private func loadContent(_ table: TableInfo) {
         let orderBy = contentSort.flatMap { sort in
             contentColumns.indices.contains(sort.column)
@@ -421,24 +433,33 @@ final class BrowserModel {
         let sql = dialect.browseSQL(
             table, filter: contentFilter, orderBy: orderBy, limit: pageSize + 1,
             offset: contentOffset)
+        // As shown on the Query tab: the page's real limit (one extra row is
+        // fetched only to know whether there's a next page).
+        let displayedSQL = dialect.browseSQL(
+            table, filter: contentFilter, orderBy: orderBy, limit: pageSize,
+            offset: contentOffset)
+        setSQL(displayedSQL)
+        isBrowsing = true
+        isRunning = true
         errorMessage = nil
         statusMessage = "Loading \(table.name)…"
         Task {
             let outcome = await fetch(sql)
-            guard selectedTableID == table.id else { return }
+            isRunning = false
+            guard selectedTableID == table.id, isBrowsing else { return }
             switch outcome {
                 case .success(var result):
                     // One extra row tells whether there's a next page.
                     contentHasMore = result.rowCount > pageSize
                     result.limit(to: pageSize)
-                    contentPane.show(result, sortedBy: orderBy == nil ? nil : contentSort)
+                    queryPane.show(result, sortedBy: orderBy == nil ? nil : contentSort)
                     if contentFilter == nil {
                         contentColumns = result.columns.map(\.name)
                     }
                     statusMessage = "\(contentRowsLabel) in \(Self.format(result.elapsed))"
                 case .failure(let error):
                     contentHasMore = false
-                    contentPane.show(nil)
+                    queryPane.show(nil)
                     statusMessage = "Loading \(table.name) failed"
                     errorMessage = "\(error)"
             }
@@ -446,7 +467,7 @@ final class BrowserModel {
     }
 
     var contentRowsLabel: String {
-        let count = contentPane.result?.rowCount ?? 0
+        let count = queryPane.result?.rowCount ?? 0
         guard count > 0 else { return contentFilter == nil ? "No rows" : "No matching rows" }
         let more = contentHasMore ? "+" : ""
         return "Rows \(contentOffset + 1)–\(contentOffset + count)\(more)"
@@ -584,6 +605,9 @@ final class BrowserModel {
             statusMessage = "Nothing to run"
             return
         }
+        // Running SQL by hand leaves table browsing (filter bar, pager,
+        // server-side sorting); header clicks then sort in memory.
+        isBrowsing = false
 
         isRunning = true
         errorMessage = nil
