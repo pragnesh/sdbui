@@ -35,11 +35,27 @@ struct SDBUIApp: App {
                     QueryView(model: model)
                 }
             }
+            .keepingSidebarWidthOnResize()
             .onAppear {
                 model.reloadDiscovery()
                 model.applyLaunchEnvironment()
             }
         }
         .defaultSize(width: 1200, height: 800)
+    }
+}
+
+extension NavigationSplitView {
+    /// Give extra window width to the detail pane instead of sharing it with
+    /// the sidebar (GTK's default for a `Paned`). The divider stays draggable.
+    @ViewBuilder
+    func keepingSidebarWidthOnResize() -> some View {
+        #if canImport(GtkBackend)
+            inspect { paned in
+                paned.resizeStartChild = false
+            }
+        #else
+            self
+        #endif
     }
 }

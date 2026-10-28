@@ -165,26 +165,42 @@ struct TableColumnsPanel: View {
 
     var body: some View {
         let _ = queryStateRevision
-        let _ = model.onQueryStateChange("columns") { queryStateRevision &+= 1 }
-        VStack(alignment: .leading, spacing: 8) {
-            if let table = model.selectedTable, !model.selectedTableColumns.isEmpty {
-                Divider()
-                Text("Columns of \(table.name)").font(.headline)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.selectedTableColumns, id: \.name) { column in
-                            HStack {
-                                Text(column.name)
-                                Spacer()
-                                Text(column.type)
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                            }
-                        }
-                    }
-                }
-                .frame(height: 180)
-            }
+        let _ = model.onQueryStateChange(
+            "columns",
+            of: { [AnyHashable(model.selectedTableID), model.selectedTableColumns.map(\.name)] }
+        ) {
+            queryStateRevision &+= 1
         }
+        let table = model.selectedTable
+        // Always present at a fixed height, so selecting tables never changes
+        // the sidebar's layout (which would re-lay-out the table list), and
+        // one text block instead of two labels per column.
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text(table.map { "Columns of \($0.name)" } ?? "Columns").font(.headline)
+            ScrollView {
+                Text(columnList(model.selectedTableColumns, selected: table != nil))
+                    .font(.system(size: 12, design: .monospaced))
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(height: 220)
     }
+
+    private func columnList(_ columns: [ResultColumn], selected: Bool) -> String {
+        guard !columns.isEmpty else {
+            return selected ? "" : "Select a table to see its columns."
+        }
+        let width = min(columns.map(\.name.count).max() ?? 0, 28)
+        return columns.map { column in
+            let name = truncated(column.name, to: width)
+            return name + String(repeating: " ", count: max(width - name.count, 0) + 2) + column.type
+        }
+        .joined(separator: "\n")
+    }
+}
+
+/// Shorten `text` to at most `length` characters, ending in "…".
+func truncated(_ text: String, to length: Int) -> String {
+    text.count > length ? text.prefix(length - 1) + "…" : text
 }

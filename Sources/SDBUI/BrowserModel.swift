@@ -44,8 +44,8 @@ final class BrowserModel {
     // This state changes on every query, so it isn't `@Observable`: SwiftCrossUI's
     // observation merges child views' reads into their ancestors, so changing
     // an observed property re-renders and re-lays-out the whole window. The
-    // views that show it subscribe with ``onQueryStateChange(_:_:)`` instead
-    // and re-render on their own.
+    // views that show it subscribe with ``onQueryStateChange(_:of:_:)``
+    // instead and re-render on their own, only when what they show changed.
 
     /// The editor's text. Not observed: the GTK text view owns the live text,
     /// and observing every keystroke made SwiftCrossUI re-layout the whole
@@ -69,13 +69,27 @@ final class BrowserModel {
     }
     @ObservationIgnored private(set) var errorMessage: String? { didSet { queryStateChanged() } }
 
-    @ObservationIgnored private var queryStateSubscribers: [String: @MainActor () -> Void] = [:]
+    private struct QueryStateSubscriber {
+        var snapshot: @MainActor () -> AnyHashable
+        var last: AnyHashable
+        var update: @MainActor () -> Void
+    }
+    @ObservationIgnored private var queryStateSubscribers: [String: QueryStateSubscriber] = [:]
+    /// Bumped whenever a new result (or none) is shown.
+    @ObservationIgnored private(set) var resultRevision = 0
     @ObservationIgnored private var queryStateNotificationPending = false
 
-    /// Call `update` (once per batch of changes) whenever query state changes.
-    /// Re-registering under the same `key` replaces the previous callback.
-    func onQueryStateChange(_ key: String, _ update: @escaping @MainActor () -> Void) {
-        queryStateSubscribers[key] = update
+    /// Call `update` when the value returned by `snapshot` (what a view
+    /// shows) changes; checked once per batch of query state changes.
+    /// Re-registering under the same `key` replaces the previous subscription.
+    func onQueryStateChange(
+        _ key: String,
+        of snapshot: @escaping @MainActor () -> AnyHashable,
+        _ update: @escaping @MainActor () -> Void
+    ) {
+        let last = queryStateSubscribers[key]?.last ?? snapshot()
+        queryStateSubscribers[key] = QueryStateSubscriber(
+            snapshot: snapshot, last: last, update: update)
     }
 
     private func queryStateChanged() {
@@ -83,8 +97,11 @@ final class BrowserModel {
         queryStateNotificationPending = true
         Task { @MainActor in
             queryStateNotificationPending = false
-            for update in queryStateSubscribers.values {
-                update()
+            for (key, subscriber) in queryStateSubscribers {
+                let current = subscriber.snapshot()
+                guard current != subscriber.last else { continue }
+                queryStateSubscribers[key]?.last = current
+                subscriber.update()
             }
         }
     }
@@ -331,6 +348,7 @@ final class BrowserModel {
     // MARK: Paging
 
     private func show(_ result: QueryResult?) {
+        resultRevision += 1
         self.result = result
         columnWidths = result.map(ResultText.columnWidths(of:)) ?? []
         gridHeader = result.map { ResultText.header(of: $0, widths: columnWidths) } ?? ""

@@ -32,17 +32,29 @@ struct QueryToolbar: View {
 
     var body: some View {
         let _ = queryStateRevision
-        let _ = model.onQueryStateChange("toolbar") { queryStateRevision &+= 1 }
+        let _ = model.onQueryStateChange("toolbar", of: { [AnyHashable(model.isRunning), model.canRun, model.result?.columns.isEmpty ?? true] }) {
+            queryStateRevision &+= 1
+        }
+        // Controls keep their natural size: squeezed below it in a narrow
+        // window, GTK's ellipsizing button labels report inconsistent sizes
+        // ("natural size must be >= min size" warnings).
         HStack {
-            Button(model.isRunning ? "Running…" : "Run") { model.runQuery() }
+            // A constant label: a size change here would re-lay-out the pane
+            // twice per query (the status line already says "Running…").
+            Button("Run") { model.runQuery() }
                 .disabled(!model.canRun)
+                .fixedSize()
             Button("Cancel") { model.cancelQuery() }
                 .disabled(!model.isRunning)
+                .fixedSize()
             Button("Export CSV") { export() }
                 .disabled(model.result?.columns.isEmpty ?? true)
+                .fixedSize()
             Spacer()
             Text("Max rows")
+                .fixedSize()
             Picker(of: model.maxRowsOptions, selection: model.binding(\.maxRows))
+                .fixedSize()
         }
     }
 
@@ -65,7 +77,9 @@ struct SQLEditor: View {
         // Re-render only when code replaces the text (which bumps
         // `sqlRevision`), not on every keystroke.
         let _ = queryStateRevision
-        let _ = model.onQueryStateChange("editor") { queryStateRevision &+= 1 }
+        let _ = model.onQueryStateChange("editor", of: { model.sqlRevision }) {
+            queryStateRevision &+= 1
+        }
         TextEditor(text: model.binding(\.sql))
             .font(.system(size: 13, design: .monospaced))
             .padding(4)
@@ -82,7 +96,9 @@ struct StatusLine: View {
 
     var body: some View {
         let _ = queryStateRevision
-        let _ = model.onQueryStateChange("status") { queryStateRevision &+= 1 }
+        let _ = model.onQueryStateChange("status", of: { [model.statusMessage, model.errorMessage ?? ""] }) {
+            queryStateRevision &+= 1
+        }
         VStack(alignment: .leading, spacing: 4) {
             Text(model.statusMessage)
                 .font(.caption)
@@ -102,7 +118,9 @@ struct ResultsPane: View {
 
     var body: some View {
         let _ = queryStateRevision
-        let _ = model.onQueryStateChange("results") { queryStateRevision &+= 1 }
+        let _ = model.onQueryStateChange("results", of: { [model.resultRevision, model.page] }) {
+            queryStateRevision &+= 1
+        }
         if let result = model.result, !result.columns.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 ResultGrid(header: model.gridHeader, rows: model.gridBody)
@@ -110,9 +128,12 @@ struct ResultsPane: View {
                 HStack {
                     Button("◀ Previous") { model.showPage(model.page - 1) }
                         .disabled(model.page == 0)
+                        .fixedSize()
                     Text(pageLabel(result))
+                        .fixedSize()
                     Button("Next ▶") { model.showPage(model.page + 1) }
                         .disabled(model.page + 1 >= model.pageCount)
+                        .fixedSize()
                     Spacer()
                 }
             }

@@ -62,6 +62,14 @@ swift test
 swift run sdbui
 ```
 
+SwiftCrossUI comes from a fork,
+[pragnesh/swift-cross-ui](https://github.com/pragnesh/swift-cross-ui/tree/sdbui-text-measure-cache)
+(upstream 0.10.0 plus GtkBackend performance patches: memoized text
+measurement and single-mutation CSS updates, ~3.5× faster table selection).
+
+To build against a local SwiftCrossUI checkout (e.g. while patching it):
+`SDBUI_SCUI_PATH=/path/to/swift-cross-ui swift build`.
+
 ## Release packages (Linux)
 
 ```sh

@@ -1,6 +1,21 @@
 // swift-tools-version:5.10
 
+import Foundation
 import PackageDescription
+
+// SDBUI_SCUI_PATH=/path/to/swift-cross-ui builds against a local checkout
+// (for working on SwiftCrossUI itself).
+let swiftCrossUI: Package.Dependency =
+    if let path = ProcessInfo.processInfo.environment["SDBUI_SCUI_PATH"] {
+        .package(path: path)
+    } else {
+        // Fork of moreSwift/swift-cross-ui 0.10.0 with GtkBackend performance
+        // patches (memoized text measurement, single-mutation CSS updates).
+        .package(
+            url: "https://github.com/pragnesh/swift-cross-ui",
+            branch: "sdbui-text-measure-cache"
+        )
+    }
 
 let package = Package(
     name: "sdbui",
@@ -9,12 +24,7 @@ let package = Package(
         .executable(name: "sdbui", targets: ["SDBUI"]),
         .library(name: "ADBCKit", targets: ["ADBCKit"]),
     ],
-    dependencies: [
-        .package(
-            url: "https://github.com/moreSwift/swift-cross-ui",
-            .upToNextMinor(from: "0.10.0")
-        )
-    ],
+    dependencies: [swiftCrossUI],
     targets: [
         // Minimal ADBC driver loader (dlopen + AdbcDriverInit) and the
         // vendored ADBC / Arrow C Data Interface headers.
