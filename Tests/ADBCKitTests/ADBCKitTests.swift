@@ -110,3 +110,50 @@ final class ArrowFormattingTests: XCTestCase {
         XCTAssertEqual(ArrowArrayView.floorDivide(-1000, 1000), -1)
     }
 }
+
+final class SQLDialectTests: XCTestCase {
+    let table = TableInfo(catalog: "def", schema: "shop", name: "order items", type: "TABLE")
+
+    func testDialectFromVendor() {
+        XCTAssertEqual(SQLDialect(vendorName: "MySQL"), .mysql)
+        XCTAssertEqual(SQLDialect(vendorName: "MariaDB"), .mysql)
+        XCTAssertEqual(SQLDialect(vendorName: "PostgreSQL"), .postgres)
+        XCTAssertEqual(SQLDialect(vendorName: "DuckDB"), .generic)
+        XCTAssertEqual(SQLDialect(vendorName: nil), .generic)
+    }
+
+    func testQuotingAndLiterals() {
+        XCTAssertEqual(SQLDialect.mysql.quote("a`b"), "`a``b`")
+        XCTAssertEqual(SQLDialect.postgres.quote("a\"b"), "\"a\"\"b\"")
+        XCTAssertEqual(SQLDialect.mysql.literal(#"it's a\b"#), #"'it''s a\\b'"#)
+        XCTAssertEqual(SQLDialect.postgres.literal(#"it's a\b"#), #"'it''s a\b'"#)
+        XCTAssertEqual(SQLDialect.mysql.qualifiedName(of: table), "`shop`.`order items`")
+    }
+
+    func testBrowseSQL() {
+        XCTAssertEqual(
+            SQLDialect.mysql.browseSQL(table, filter: nil, limit: 101, offset: 0),
+            "SELECT * FROM `shop`.`order items` LIMIT 101")
+        let filter = SQLDialect.Filter(column: "name", op: .contains, value: "50%_off")
+        XCTAssertEqual(
+            SQLDialect.mysql.browseSQL(table, filter: filter, limit: 101, offset: 200),
+            #"SELECT * FROM `shop`.`order items` WHERE `name` LIKE '%50\\%\\_off%' LIMIT 101 OFFSET 200"#)
+        XCTAssertEqual(
+            SQLDialect.postgres.whereClause(for: filter),
+            #"CAST("name" AS TEXT) LIKE '%50\%\_off%'"#)
+        XCTAssertEqual(
+            SQLDialect.postgres.whereClause(for: .init(column: "id", op: .greaterOrEqual, value: "5")),
+            #""id" >= '5'"#)
+        XCTAssertEqual(
+            SQLDialect.mysql.whereClause(for: .init(column: "x", op: .isNull, value: "ignored")),
+            "`x` IS NULL")
+    }
+
+    func testCatalogQueriesUseLiterals() throws {
+        let sql = try XCTUnwrap(SQLDialect.mysql.columnsSQL(
+            TableInfo(catalog: nil, schema: "o'shop", name: "t", type: nil)))
+        XCTAssertTrue(sql.contains("TABLE_SCHEMA = 'o''shop' AND TABLE_NAME = 't'"))
+        XCTAssertNil(SQLDialect.generic.columnsSQL(table))
+        XCTAssertNil(SQLDialect.postgres.createTableSQL(table))
+    }
+}

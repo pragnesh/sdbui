@@ -22,26 +22,26 @@ struct SDBUIApp: App {
 
     var body: some Scene {
         WindowGroup("SDB Query Browser") {
-            // Each pane sits in a GeometryReader, which is exactly the size
-            // it's offered, so a pane's content changing size re-lays-out
-            // only that pane.
-            NavigationSplitView {
-                GeometryReader { _ in
-                    SidebarView(model: model)
+            RootView(model: model)
+                .onAppear {
+                    model.reloadDiscovery()
+                    model.applyLaunchEnvironment()
                 }
-                .frame(minWidth: 280)
-            } detail: {
-                GeometryReader { _ in
-                    QueryView(model: model)
-                }
-            }
-            .keepingSidebarWidthOnResize()
-            .onAppear {
-                model.reloadDiscovery()
-                model.applyLaunchEnvironment()
-            }
         }
         .defaultSize(width: 1200, height: 800)
+    }
+}
+
+/// Switches between the connection screen and the connected main window.
+struct RootView: View {
+    var model: BrowserModel
+
+    var body: some View {
+        if model.connection == nil {
+            DisconnectedView(model: model)
+        } else {
+            MainWindow(model: model)
+        }
     }
 }
 

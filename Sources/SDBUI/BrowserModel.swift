@@ -6,10 +6,26 @@ import SwiftCrossUI
     import Observation
 #endif
 
+/// The tabs of the main window, as in Sequel Ace's toolbar.
+enum BrowserTab: String, CaseIterable, Hashable {
+    case structure = "Structure"
+    case content = "Content"
+    case info = "Table Info"
+    case query = "Query"
+}
+
 /// All state for the query browser window.
 ///
 /// ADBC calls block, so they run on detached tasks; results are applied back
 /// on the main actor.
+///
+/// Only rarely-changing state (profiles, the connection, the table list, the
+/// selected database) is `@Observable`. SwiftCrossUI's observation merges
+/// child views' reads into their ancestors, so changing an observed property
+/// re-renders and re-lays-out the whole window. Everything that changes per
+/// table, tab or query is `@ObservationIgnored`; views that show it subscribe
+/// with ``watch(_:of:_:)`` and redraw on their own, only when what they show
+/// changed.
 @Observable
 @MainActor
 final class BrowserModel {
@@ -27,94 +43,113 @@ final class BrowserModel {
     var connectionTitle = ""
     var isConnecting = false
 
-    // MARK: Schema browser
+    // MARK: Schema
 
     var tables: [TableInfo] = []
+    /// The database (MySQL) or schema (PostgreSQL) shown in the sidebar.
+    private(set) var selectedDatabase: String?
     /// What's typed in the table filter field; see ``TableBrowser``.
     @ObservationIgnored var tableFilterDraft = ""
     @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
-    var showSystemSchemas = false
-    @ObservationIgnored private(set) var selectedTableID: String? { didSet { queryStateChanged() } }
-    @ObservationIgnored private(set) var selectedTableColumns: [ResultColumn] = [] {
-        didSet { queryStateChanged() }
+
+    @ObservationIgnored private(set) var selectedTableID: String? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var selectedTab: BrowserTab = .content {
+        didSet { stateChanged() }
     }
+    /// Which table each tab last loaded, so switching back doesn't reload.
+    @ObservationIgnored private var loadedTables: [BrowserTab: String] = [:]
 
-    // MARK: Editor and results
-    //
-    // This state changes on every query, so it isn't `@Observable`: SwiftCrossUI's
-    // observation merges child views' reads into their ancestors, so changing
-    // an observed property re-renders and re-lays-out the whole window. The
-    // views that show it subscribe with ``onQueryStateChange(_:of:_:)``
-    // instead and re-render on their own, only when what they show changed.
+    // MARK: Panes
 
-    /// The editor's text. Not observed: the GTK text view owns the live text,
-    /// and observing every keystroke made SwiftCrossUI re-layout the whole
-    /// window per key. Code that replaces the text calls ``setSQL(_:)``.
+    let pageSize = 100
+    @ObservationIgnored private(set) lazy var contentPane = makePane()
+    @ObservationIgnored private(set) lazy var structurePane = makePane()
+    @ObservationIgnored private(set) lazy var indexPane = makePane()
+    @ObservationIgnored private(set) lazy var infoPane = makePane()
+    @ObservationIgnored private(set) lazy var queryPane = makePane()
+    @ObservationIgnored private(set) var createStatement = "" { didSet { stateChanged() } }
+
+    // MARK: Content browsing (server-side paging and filtering)
+
+    @ObservationIgnored private(set) var contentOffset = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var contentHasMore = false { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var contentFilter: SQLDialect.Filter? {
+        didSet { stateChanged() }
+    }
+    /// Columns offered by the filter bar (from the unfiltered content).
+    @ObservationIgnored private(set) var contentColumns: [String] = [] { didSet { stateChanged() } }
+    @ObservationIgnored var filterColumn: String? { didSet { stateChanged() } }
+    @ObservationIgnored var filterOperator: SQLDialect.Filter.Operator? = .contains {
+        didSet { stateChanged() }
+    }
+    /// What's typed in the filter value field (the GTK entry owns the text).
+    @ObservationIgnored var filterValue = ""
+
+    // MARK: Query tab
+
+    /// The editor's text. Not observed: the GTK text view owns the live text.
+    /// Code that replaces it calls ``setSQL(_:)``.
     @ObservationIgnored var sql = ""
     /// Bumped by ``setSQL(_:)`` so the editor picks up programmatic changes.
-    @ObservationIgnored private(set) var sqlRevision = 0 { didSet { queryStateChanged() } }
-    @ObservationIgnored private(set) var isRunning = false { didSet { queryStateChanged() } }
-    @ObservationIgnored private(set) var result: QueryResult? { didSet { queryStateChanged() } }
-    @ObservationIgnored private(set) var page = 0 { didSet { queryStateChanged() } }
-    /// The current page rendered as monospaced text (see ``ResultText``).
-    @ObservationIgnored private(set) var gridHeader = "" { didSet { queryStateChanged() } }
-    @ObservationIgnored private(set) var gridBody = "" { didSet { queryStateChanged() } }
-    @ObservationIgnored private var columnWidths: [Int] = []
+    @ObservationIgnored private(set) var sqlRevision = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var isRunning = false { didSet { stateChanged() } }
     var maxRows: Int? = 10_000
-    let pageSize = 100
     let maxRowsOptions = [100, 1_000, 10_000, 100_000]
 
+    // MARK: Status
+
     @ObservationIgnored private(set) var statusMessage = "Not connected" {
-        didSet { queryStateChanged() }
+        didSet { stateChanged() }
     }
-    @ObservationIgnored private(set) var errorMessage: String? { didSet { queryStateChanged() } }
-
-    private struct QueryStateSubscriber {
-        var snapshot: @MainActor () -> AnyHashable
-        var last: AnyHashable
-        var update: @MainActor () -> Void
-    }
-    @ObservationIgnored private var queryStateSubscribers: [String: QueryStateSubscriber] = [:]
-    /// Bumped whenever a new result (or none) is shown.
-    @ObservationIgnored private(set) var resultRevision = 0
-    @ObservationIgnored private var queryStateNotificationPending = false
-
-    /// Call `update` when the value returned by `snapshot` (what a view
-    /// shows) changes; checked once per batch of query state changes.
-    /// Re-registering under the same `key` replaces the previous subscription.
-    func onQueryStateChange(
-        _ key: String,
-        of snapshot: @escaping @MainActor () -> AnyHashable,
-        _ update: @escaping @MainActor () -> Void
-    ) {
-        let last = queryStateSubscribers[key]?.last ?? snapshot()
-        queryStateSubscribers[key] = QueryStateSubscriber(
-            snapshot: snapshot, last: last, update: update)
-    }
-
-    private func queryStateChanged() {
-        guard !queryStateNotificationPending else { return }
-        queryStateNotificationPending = true
-        Task { @MainActor in
-            queryStateNotificationPending = false
-            for (key, subscriber) in queryStateSubscribers {
-                let current = subscriber.snapshot()
-                guard current != subscriber.last else { continue }
-                queryStateSubscribers[key]?.last = current
-                subscriber.update()
-            }
-        }
-    }
-
-    func selectTable(_ id: String?) {
-        guard id != selectedTableID else { return }
-        selectedTableID = id
-        openSelectedTable()
-    }
+    @ObservationIgnored private(set) var errorMessage: String? { didSet { stateChanged() } }
+    /// Number of catalog/content loads in flight.
+    @ObservationIgnored private(set) var loadsInFlight = 0 { didSet { stateChanged() } }
 
     static let systemSchemas: Set<String> = [
         "information_schema", "pg_catalog", "pg_toast", "mysql", "performance_schema", "sys",
     ]
+
+    private func makePane() -> ResultPane {
+        let pane = ResultPane(pageSize: pageSize)
+        pane.onChange = { [weak self] in self?.stateChanged() }
+        return pane
+    }
+
+    // MARK: Change notification
+
+    private struct Subscriber {
+        var snapshot: @MainActor () -> AnyHashable
+        var last: AnyHashable
+        var update: @MainActor () -> Void
+    }
+    @ObservationIgnored private var subscribers: [String: Subscriber] = [:]
+    @ObservationIgnored private var notificationPending = false
+
+    /// Call `update` when the value returned by `snapshot` (what a view
+    /// shows) changes; checked once per batch of state changes.
+    /// Re-registering under the same `key` replaces the previous subscription.
+    func watch(
+        _ key: String,
+        of snapshot: @escaping @MainActor () -> AnyHashable,
+        _ update: @escaping @MainActor () -> Void
+    ) {
+        let last = subscribers[key]?.last ?? snapshot()
+        subscribers[key] = Subscriber(snapshot: snapshot, last: last, update: update)
+    }
+
+    private func stateChanged() {
+        guard !notificationPending else { return }
+        notificationPending = true
+        Task { @MainActor in
+            notificationPending = false
+            for (key, subscriber) in subscribers {
+                let current = subscriber.snapshot()
+                guard current != subscriber.last else { continue }
+                subscribers[key]?.last = current
+                subscriber.update()
+            }
+        }
+    }
 
     // MARK: Discovery
 
@@ -136,7 +171,13 @@ final class BrowserModel {
         }
         if let profile = environment["SDBUI_PROFILE"] {
             selectedProfileID = profile
-            connectSelectedProfile()
+            // Connecting takes ~50 ms; let the first render finish first, or
+            // SwiftCrossUI can miss the change and keep showing the
+            // connection screen.
+            Task {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                connectSelectedProfile()
+            }
         }
     }
 
@@ -172,11 +213,9 @@ final class BrowserModel {
 
             switch outcome {
                 case .success(let connection):
+                    resetBrowsing()
                     self.connection = connection
                     connectionTitle = title
-                    show(nil)
-                    tables = []
-                    selectedTableID = nil
                     let vendor = [connection.vendorName, connection.vendorVersion]
                         .compactMap { $0 }.joined(separator: " ")
                     statusMessage = vendor.isEmpty ? "Connected" : "Connected to \(vendor)"
@@ -186,6 +225,7 @@ final class BrowserModel {
                     refreshTables()
                     if runOnConnect {
                         runOnConnect = false
+                        selectTab(.query)
                         runQuery()
                     }
                 case .failure(let error):
@@ -197,14 +237,19 @@ final class BrowserModel {
 
     func disconnect() {
         connection = nil
-        tables = []
-        selectedTableID = nil
-        selectedTableColumns = []
-        show(nil)
+        resetBrowsing()
         statusMessage = "Not connected"
     }
 
-    // MARK: Schema browser
+    private func resetBrowsing() {
+        tables = []
+        selectedDatabase = nil
+        selectedTableID = nil
+        loadedTables = [:]
+        clearTablePanes()
+        queryPane.show(nil)
+        errorMessage = nil
+    }
 
     var vendorDescription: String {
         guard let connection else { return "" }
@@ -212,12 +257,34 @@ final class BrowserModel {
             .joined(separator: " ")
     }
 
+    var dialect: SQLDialect {
+        connection?.dialect ?? .generic
+    }
+
+    // MARK: Databases and tables
+
+    /// Databases (or schemas) that contain tables, system ones last.
+    var databases: [String] {
+        let names = Set(tables.map(\.namespace))
+        return names.sorted { a, b in
+            let aSystem = Self.systemSchemas.contains(a.lowercased())
+            let bSystem = Self.systemSchemas.contains(b.lowercased())
+            return aSystem == bSystem ? a < b : !aSystem
+        }
+    }
+
+    func selectDatabase(_ database: String?) {
+        guard database != selectedDatabase else { return }
+        selectedDatabase = database
+        selectTable(nil)
+    }
+
+    /// Tables of the selected database whose name contains `filter`.
     func visibleTables(matching filter: String) -> [TableInfo] {
         let filter = filter.trimmingCharacters(in: .whitespaces).lowercased()
         return tables.filter { table in
-            (showSystemSchemas || !Self.systemSchemas.contains(table.namespace.lowercased()))
-                && (filter.isEmpty || table.name.lowercased().contains(filter)
-                    || table.namespace.lowercased().contains(filter))
+            table.namespace == (selectedDatabase ?? "")
+                && (filter.isEmpty || table.name.lowercased().contains(filter))
         }
     }
 
@@ -237,11 +304,10 @@ final class BrowserModel {
     }
 
     func label(for table: TableInfo) -> String {
-        let name = table.namespace.isEmpty ? table.name : "\(table.namespace).\(table.name)"
         if let type = table.type, type.uppercased() != "TABLE", type.uppercased() != "BASE TABLE" {
-            return "\(name)  (\(type.lowercased()))"
+            return "\(table.name)  (\(type.lowercased()))"
         }
-        return name
+        return table.name
     }
 
     func refreshTables() {
@@ -253,29 +319,211 @@ final class BrowserModel {
                     self.tables = tables.sorted {
                         $0.namespace == $1.namespace ? $0.name < $1.name : $0.namespace < $1.namespace
                     }
+                    if selectedDatabase.map({ !databases.contains($0) }) ?? true {
+                        selectedDatabase = databases.first
+                    }
                 case .failure(let error):
                     errorMessage = "Could not list tables: \(error)"
             }
         }
     }
 
-    /// Show a table's columns and preview its first rows.
-    func openSelectedTable() {
-        guard let connection, let table = selectedTable else {
-            selectedTableColumns = []
-            return
-        }
-        setSQL("SELECT * FROM \(connection.qualifiedName(of: table)) LIMIT \(pageSize)")
-        runQuery()
+    func selectTable(_ id: String?) {
+        guard id != selectedTableID else { return }
+        selectedTableID = id
+        loadedTables = [:]
+        contentOffset = 0
+        contentFilter = nil
+        contentColumns = []
+        filterColumn = nil
+        clearTablePanes()
+        loadCurrentTab()
+    }
 
-        Task {
-            let outcome = await Task.detached { Result { try connection.columns(of: table) } }.value
-            // Drivers without GetTableSchema just leave the list empty.
-            selectedTableColumns = (try? outcome.get()) ?? []
+    private func clearTablePanes() {
+        for pane in [contentPane, structurePane, indexPane, infoPane] {
+            pane.show(nil)
+        }
+        createStatement = ""
+    }
+
+    // MARK: Tabs
+
+    func selectTab(_ tab: BrowserTab) {
+        selectedTab = tab
+        loadCurrentTab()
+    }
+
+    /// Reload what the current tab shows.
+    func refreshCurrentTab() {
+        loadedTables[selectedTab] = nil
+        loadCurrentTab()
+    }
+
+    private func loadCurrentTab() {
+        guard selectedTab != .query, let table = selectedTable,
+            loadedTables[selectedTab] != table.id
+        else { return }
+        loadedTables[selectedTab] = table.id
+        switch selectedTab {
+            case .content: loadContent(table)
+            case .structure: loadStructure(table)
+            case .info: loadInfo(table)
+            case .query: break
         }
     }
 
-    // MARK: Queries
+    /// Run `sql` off the main actor, counting it as a load in flight.
+    private func fetch(_ sql: String, maxRows: Int = 10_000) async -> Result<QueryResult, any Error> {
+        guard let connection else { return .failure(ADBCError("Not connected")) }
+        loadsInFlight += 1
+        defer { loadsInFlight -= 1 }
+        return await Task.detached {
+            Result { try connection.execute(sql, maxRows: maxRows) }
+        }.value
+    }
+
+    /// Show `outcome` in `pane` if `table` is still selected.
+    private func apply(
+        _ outcome: Result<QueryResult, any Error>, to pane: ResultPane, for table: TableInfo,
+        what: String
+    ) {
+        guard selectedTableID == table.id else { return }
+        switch outcome {
+            case .success(let result):
+                pane.show(result)
+            case .failure(let error):
+                pane.show(nil)
+                errorMessage = "Could not load \(what) of \(table.name): \(error)"
+        }
+    }
+
+    // MARK: Content tab
+
+    private func loadContent(_ table: TableInfo) {
+        let sql = dialect.browseSQL(
+            table, filter: contentFilter, limit: pageSize + 1, offset: contentOffset)
+        errorMessage = nil
+        statusMessage = "Loading \(table.name)…"
+        Task {
+            let outcome = await fetch(sql)
+            guard selectedTableID == table.id else { return }
+            switch outcome {
+                case .success(var result):
+                    // One extra row tells whether there's a next page.
+                    contentHasMore = result.rows.count > pageSize
+                    result.rows = Array(result.rows.prefix(pageSize))
+                    contentPane.show(result)
+                    if contentFilter == nil {
+                        contentColumns = result.columns.map(\.name)
+                    }
+                    statusMessage = "\(contentRowsLabel) in \(Self.format(result.elapsed))"
+                case .failure(let error):
+                    contentHasMore = false
+                    contentPane.show(nil)
+                    statusMessage = "Loading \(table.name) failed"
+                    errorMessage = "\(error)"
+            }
+        }
+    }
+
+    var contentRowsLabel: String {
+        let count = contentPane.result?.rows.count ?? 0
+        guard count > 0 else { return contentFilter == nil ? "No rows" : "No matching rows" }
+        let more = contentHasMore ? "+" : ""
+        return "Rows \(contentOffset + 1)–\(contentOffset + count)\(more)"
+    }
+
+    func showContentPage(next: Bool) {
+        guard let table = selectedTable else { return }
+        contentOffset = max(0, contentOffset + (next ? pageSize : -pageSize))
+        loadContent(table)
+    }
+
+    func applyContentFilter() {
+        guard let table = selectedTable else { return }
+        if let column = filterColumn ?? contentColumns.first, let op = filterOperator {
+            contentFilter = SQLDialect.Filter(column: column, op: op, value: filterValue)
+        } else {
+            contentFilter = nil
+        }
+        contentOffset = 0
+        loadContent(table)
+    }
+
+    func clearContentFilter() {
+        guard let table = selectedTable, contentFilter != nil else { return }
+        contentFilter = nil
+        contentOffset = 0
+        loadContent(table)
+    }
+
+    // MARK: Structure tab
+
+    private func loadStructure(_ table: TableInfo) {
+        guard let connection else { return }
+        errorMessage = nil
+        Task {
+            if let columnsSQL = dialect.columnsSQL(table) {
+                apply(await fetch(columnsSQL), to: structurePane, for: table, what: "columns")
+            } else {
+                // Other databases: what ADBC reports (names and Arrow types).
+                let outcome = await Task.detached {
+                    Result { try connection.columns(of: table) }
+                }.value
+                apply(
+                    outcome.map { columns in
+                        QueryResult(
+                            columns: [.init(name: "Field", type: ""), .init(name: "Type", type: "")],
+                            rows: columns.map { [$0.name, $0.type] })
+                    },
+                    to: structurePane, for: table, what: "columns")
+            }
+            if let indexesSQL = dialect.indexesSQL(table) {
+                apply(await fetch(indexesSQL), to: indexPane, for: table, what: "indexes")
+            }
+            if selectedTableID == table.id {
+                statusMessage = "Structure of \(table.name)"
+            }
+        }
+    }
+
+    // MARK: Table Info tab
+
+    private func loadInfo(_ table: TableInfo) {
+        errorMessage = nil
+        Task {
+            if let infoSQL = dialect.tableInfoSQL(table) {
+                let outcome = await fetch(infoSQL).map(Self.transposed)
+                apply(outcome, to: infoPane, for: table, what: "table information")
+            } else {
+                infoPane.show(QueryResult(
+                    columns: [.init(name: "Property", type: ""), .init(name: "Value", type: "")],
+                    rows: [["Name", table.name], ["Type", table.type ?? ""]]))
+            }
+            if let createSQL = dialect.createTableSQL(table),
+                case .success(let result) = await fetch(createSQL),
+                selectedTableID == table.id
+            {
+                createStatement = result.rows.first?.last.flatMap { $0 } ?? ""
+            }
+            if selectedTableID == table.id {
+                statusMessage = "Information about \(table.name)"
+            }
+        }
+    }
+
+    /// A one-row result as Property/Value rows.
+    private static func transposed(_ result: QueryResult) -> QueryResult {
+        let row = result.rows.first ?? []
+        return QueryResult(
+            columns: [.init(name: "Property", type: ""), .init(name: "Value", type: "")],
+            rows: result.columns.enumerated().map { index, column in
+                [column.name, index < row.count ? row[index] : nil]
+            })
+    }
+
+    // MARK: Query tab
 
     var canRun: Bool {
         connection != nil && !isRunning
@@ -287,7 +535,7 @@ final class BrowserModel {
     }
 
     func runQuery() {
-        guard let connection, canRun else { return }
+        guard connection != nil, canRun else { return }
         var statement = sql.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !statement.isEmpty else {
             statusMessage = "Nothing to run"
@@ -296,22 +544,17 @@ final class BrowserModel {
         while statement.hasSuffix(";") {
             statement = String(statement.dropLast()).trimmingCharacters(in: .whitespaces)
         }
-        let limit = maxRows ?? 10_000
 
         isRunning = true
         errorMessage = nil
         statusMessage = "Running…"
-
         Task {
-            let outcome = await Task.detached {
-                Result { try connection.execute(statement, maxRows: limit) }
-            }.value
+            let outcome = await fetch(statement, maxRows: maxRows ?? 10_000)
             isRunning = false
-
             switch outcome {
                 case .success(let result):
-                    show(result)
-                    statusMessage = summary(of: result)
+                    queryPane.show(result)
+                    statusMessage = Self.summary(of: result)
                 case .failure(let error):
                     statusMessage = "Query failed"
                     errorMessage = "\(error)"
@@ -330,10 +573,14 @@ final class BrowserModel {
         }
     }
 
-    private func summary(of result: QueryResult) -> String {
-        let seconds = Double(result.elapsed.components.attoseconds) / 1e18
-            + Double(result.elapsed.components.seconds)
-        let time = String(format: "%.3fs", seconds)
+    private static func format(_ elapsed: Duration) -> String {
+        let seconds = Double(elapsed.components.attoseconds) / 1e18
+            + Double(elapsed.components.seconds)
+        return String(format: "%.3fs", seconds)
+    }
+
+    private static func summary(of result: QueryResult) -> String {
+        let time = format(result.elapsed)
         if result.columns.isEmpty {
             if let affected = result.rowsAffected {
                 return "\(affected) row\(affected == 1 ? "" : "s") affected in \(time)"
@@ -345,36 +592,10 @@ final class BrowserModel {
         return "\(rows) row\(rows == 1 ? "" : "s")\(more) in \(time)"
     }
 
-    // MARK: Paging
-
-    private func show(_ result: QueryResult?) {
-        resultRevision += 1
-        self.result = result
-        columnWidths = result.map(ResultText.columnWidths(of:)) ?? []
-        gridHeader = result.map { ResultText.header(of: $0, widths: columnWidths) } ?? ""
-        showPage(0)
-    }
-
-    func showPage(_ page: Int) {
-        self.page = max(0, min(page, pageCount - 1))
-        gridBody = result.map { ResultText.body(of: $0, rows: pageRange, widths: columnWidths) } ?? ""
-    }
-
-    var pageCount: Int {
-        guard let result, !result.rows.isEmpty else { return 1 }
-        return (result.rows.count + pageSize - 1) / pageSize
-    }
-
-    var pageRange: Range<Int> {
-        guard let result else { return 0..<0 }
-        let start = min(page * pageSize, result.rows.count)
-        return start..<min(start + pageSize, result.rows.count)
-    }
-
     // MARK: Export
 
-    func exportCSV(to url: URL) {
-        guard let result else { return }
+    func exportCSV(_ pane: ResultPane, to url: URL) {
+        guard let result = pane.result else { return }
         func escape(_ field: String?) -> String {
             guard let field else { return "" }
             if field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) {

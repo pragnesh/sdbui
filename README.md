@@ -34,16 +34,30 @@ this project includes a tiny equivalent:
 
 ## Features
 
+The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
+
+- **Toolbar:** database (MySQL) or schema (PostgreSQL) selector and the
+  Structure / Content / Table Info / Query tabs
+- **Sidebar:** the selected database's tables (via `AdbcConnectionGetObjects`)
+  with a filter
+- **Content:** browse a table 100 rows at a time (server-side `LIMIT`/`OFFSET`)
+  with a column / operator / value filter bar
+- **Structure:** columns (type, nullability, key, default, extra) and indexes
+- **Table Info:** engine, row estimate, sizes, collation, … and the
+  `CREATE TABLE` statement (MySQL)
+- **Query:** SQL editor, Run / Cancel (`AdbcConnectionCancel`), row limit,
+  CSV export
+
+Structure and Table Info use `information_schema` / `pg_catalog` for MySQL,
+MariaDB and PostgreSQL; other databases show the columns ADBC reports.
+
+Also:
+
 - Profile list and URI connect; vendor name/version from `GetInfo`
-- Schema browser via `AdbcConnectionGetObjects` with filter and system-schema toggle;
-  clicking a table previews it and shows its columns
-- SQL editor, Run / Cancel (`AdbcConnectionCancel`), row limit
-- Results as a monospaced, selectable text grid with typed headers and
-  paging (100 rows/page)
+- Results as a monospaced, selectable text grid with typed headers
 - Arrow types: ints, floats, bool, utf8/large/view, binary, decimal128/256,
   date/time/timestamp (with time zones), duration, interval, list, struct, map,
   union, dictionary
-- Export results to CSV
 
 ## Build and run (Linux)
 
@@ -98,7 +112,8 @@ Profiles that go through SSH tunnels need the tunnels running first
 - One statement per Run (drivers generally reject multi-statement strings).
 - Results keep at most "Max rows" rows; cells are cut at 500 characters
   (also in the CSV export) and at 48 characters in the grid.
-- The sidebar lists at most 50 tables; use the filter to find others.
+- The sidebar lists at most 100 tables per database; use the filter to find others.
+- Content browsing is read-only (no cell editing).
 
 ## Performance notes
 

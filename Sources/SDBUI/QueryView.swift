@@ -2,22 +2,21 @@ import ADBCKit
 import Foundation
 import SwiftCrossUI
 
-/// SQL editor, toolbar, status line and paged results.
-///
-/// SwiftCrossUI re-renders a view (and lays out all of its children) when any
-/// model property its `body` read changes, so this view reads nothing itself
-/// and each part observes only what it shows — typing in the editor must not
-/// re-layout the results.
-struct QueryView: View {
+/// The Query tab: SQL editor, toolbar and paged results.
+struct QueryTab: View {
     var model: BrowserModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             QueryToolbar(model: model)
             SQLEditor(model: model)
-            StatusLine(model: model)
             Divider()
-            ResultsPane(model: model)
+            PaneGrid(
+                model: model, pane: model.queryPane, key: "query-grid",
+                emptyText: "Write a query and press Run."
+            )
+            .frame(maxHeight: .infinity)
+            QueryPager(model: model)
         }
         .padding()
     }
@@ -25,22 +24,24 @@ struct QueryView: View {
 
 struct QueryToolbar: View {
     var model: BrowserModel
-    /// Bumped when the model's query state changes; see `onQueryStateChange`.
-    @State private var queryStateRevision = 0
+    @State private var revision = 0
 
     @Environment(\.chooseFileSaveDestination) var chooseFileSaveDestination
 
     var body: some View {
-        let _ = queryStateRevision
-        let _ = model.onQueryStateChange("toolbar", of: { [AnyHashable(model.isRunning), model.canRun, model.result?.columns.isEmpty ?? true] }) {
-            queryStateRevision &+= 1
+        let _ = revision
+        let _ = model.watch(
+            "query-toolbar",
+            of: { [AnyHashable(model.isRunning), model.canRun, model.queryPane.hasColumns] }
+        ) {
+            revision &+= 1
         }
         // Controls keep their natural size: squeezed below it in a narrow
         // window, GTK's ellipsizing button labels report inconsistent sizes
         // ("natural size must be >= min size" warnings).
         HStack {
             // A constant label: a size change here would re-lay-out the pane
-            // twice per query (the status line already says "Running…").
+            // twice per query (the status bar already says "Running…").
             Button("Run") { model.runQuery() }
                 .disabled(!model.canRun)
                 .fixedSize()
@@ -48,7 +49,7 @@ struct QueryToolbar: View {
                 .disabled(!model.isRunning)
                 .fixedSize()
             Button("Export CSV") { export() }
-                .disabled(model.result?.columns.isEmpty ?? true)
+                .disabled(!model.queryPane.hasColumns)
                 .fixedSize()
             Spacer()
             Text("Max rows")
@@ -63,23 +64,20 @@ struct QueryToolbar: View {
             guard let url = await chooseFileSaveDestination(
                 title: "Export results", defaultFileName: "results.csv")
             else { return }
-            model.exportCSV(to: url)
+            model.exportCSV(model.queryPane, to: url)
         }
     }
 }
 
 struct SQLEditor: View {
     var model: BrowserModel
-    /// Bumped when the model's query state changes; see `onQueryStateChange`.
-    @State private var queryStateRevision = 0
+    @State private var revision = 0
 
     var body: some View {
         // Re-render only when code replaces the text (which bumps
         // `sqlRevision`), not on every keystroke.
-        let _ = queryStateRevision
-        let _ = model.onQueryStateChange("editor", of: { model.sqlRevision }) {
-            queryStateRevision &+= 1
-        }
+        let _ = revision
+        let _ = model.watch("editor", of: { model.sqlRevision }) { revision &+= 1 }
         TextEditor(text: model.binding(\.sql))
             .font(.system(size: 13, design: .monospaced))
             .padding(4)
@@ -89,74 +87,40 @@ struct SQLEditor: View {
     }
 }
 
-struct StatusLine: View {
+/// Client-side pages of the query result.
+struct QueryPager: View {
     var model: BrowserModel
-    /// Bumped when the model's query state changes; see `onQueryStateChange`.
-    @State private var queryStateRevision = 0
+    @State private var revision = 0
 
     var body: some View {
-        let _ = queryStateRevision
-        let _ = model.onQueryStateChange("status", of: { [model.statusMessage, model.errorMessage ?? ""] }) {
-            queryStateRevision &+= 1
-        }
-        VStack(alignment: .leading, spacing: 4) {
-            Text(model.statusMessage)
-                .font(.caption)
-            if let error = model.errorMessage {
-                Text(error)
-                    .foregroundColor(.red)
-                    .textSelectionEnabled()
-            }
-        }
-    }
-}
-
-struct ResultsPane: View {
-    var model: BrowserModel
-    /// Bumped when the model's query state changes; see `onQueryStateChange`.
-    @State private var queryStateRevision = 0
-
-    var body: some View {
-        let _ = queryStateRevision
-        let _ = model.onQueryStateChange("results", of: { [model.resultRevision, model.page] }) {
-            queryStateRevision &+= 1
-        }
-        if let result = model.result, !result.columns.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ResultGrid(header: model.gridHeader, rows: model.gridBody)
-                    .frame(maxHeight: .infinity)
-                HStack {
-                    Button("◀ Previous") { model.showPage(model.page - 1) }
-                        .disabled(model.page == 0)
-                        .fixedSize()
-                    Text(pageLabel(result))
-                        .fixedSize()
-                    Button("Next ▶") { model.showPage(model.page + 1) }
-                        .disabled(model.page + 1 >= model.pageCount)
-                        .fixedSize()
-                    Spacer()
-                }
-            }
-        } else {
-            VStack(alignment: .leading) {
-                Text(model.connection == nil
-                    ? "Connect to a database from the sidebar to start querying."
-                    : "Write a query and press Run.")
-                    .foregroundColor(.gray)
+        let _ = revision
+        let _ = model.watch("query-pager", of: { model.queryPane.revision }) { revision &+= 1 }
+        let pane = model.queryPane
+        if let result = pane.result, !result.columns.isEmpty {
+            HStack {
+                Button("◀ Previous") { pane.showPage(pane.page - 1) }
+                    .disabled(pane.page == 0)
+                    .fixedSize()
+                Text(pageLabel(result))
+                    .fixedSize()
+                Button("Next ▶") { pane.showPage(pane.page + 1) }
+                    .disabled(pane.page + 1 >= pane.pageCount)
+                    .fixedSize()
                 Spacer()
             }
         }
     }
 
     private func pageLabel(_ result: QueryResult) -> String {
-        let range = model.pageRange
+        let range = model.queryPane.pageRange
         guard !range.isEmpty else { return "No rows" }
         return "Rows \(range.lowerBound + 1)–\(range.upperBound) of \(result.rows.count)"
             + (result.truncated ? "+" : "")
     }
 }
 
-/// The current result page as two monospaced labels (see ``ResultText``).
+/// A grid of text (see ``ResultText``) that scrolls both ways and stays in
+/// the top-leading corner when it's smaller than the viewport.
 struct ResultGrid: View {
     var header: String
     var rows: String

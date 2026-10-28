@@ -28,6 +28,11 @@ public struct TableInfo: Sendable, Hashable, Identifiable {
 public struct ResultColumn: Sendable, Hashable {
     public var name: String
     public var type: String
+
+    public init(name: String, type: String) {
+        self.name = name
+        self.type = type
+    }
 }
 
 public struct QueryResult: Sendable {
@@ -38,6 +43,17 @@ public struct QueryResult: Sendable {
     public var truncated: Bool
     public var rowsAffected: Int64?
     public var elapsed: Duration
+
+    public init(
+        columns: [ResultColumn], rows: [[String?]], truncated: Bool = false,
+        rowsAffected: Int64? = nil, elapsed: Duration = .zero
+    ) {
+        self.columns = columns
+        self.rows = rows
+        self.truncated = truncated
+        self.rowsAffected = rowsAffected
+        self.elapsed = elapsed
+    }
 }
 
 /// An open ADBC connection.
@@ -207,25 +223,16 @@ public final class ADBCConnection: @unchecked Sendable {
 
     // MARK: SQL helpers
 
+    /// The connected database's SQL flavour (from the vendor name).
+    public var dialect: SQLDialect { SQLDialect(vendorName: vendorName) }
+
     /// Quote an identifier using the convention of the connected database.
     public func quote(_ identifier: String) -> String {
-        let vendor = (vendorName ?? "").lowercased()
-        if vendor.contains("mysql") || vendor.contains("mariadb") || vendor.contains("bigquery") {
-            return "`" + identifier.replacingOccurrences(of: "`", with: "``") + "`"
-        }
-        return "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        dialect.quote(identifier)
     }
 
     public func qualifiedName(of table: TableInfo) -> String {
-        var parts: [String] = []
-        if let schema = table.schema, !schema.isEmpty {
-            parts.append(schema)
-        } else if let catalog = table.catalog, !catalog.isEmpty {
-            // e.g. MySQL reports databases as catalogs.
-            parts.append(catalog)
-        }
-        parts.append(table.name)
-        return parts.map(quote).joined(separator: ".")
+        dialect.qualifiedName(of: table)
     }
 
     // MARK: Internals
