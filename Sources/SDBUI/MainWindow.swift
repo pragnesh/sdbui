@@ -228,7 +228,8 @@ struct StatusBar: View {
     }
 }
 
-/// A result pane's grid, redrawn only when the pane changes.
+/// A result pane's grid, redrawn only when the pane changes. The grid is
+/// virtualized: only displayed cells are formatted and drawn.
 struct PaneGrid: View {
     var model: BrowserModel
     var pane: ResultPane
@@ -241,7 +242,12 @@ struct PaneGrid: View {
         let _ = revision
         let _ = model.watch(key, of: { pane.revision }) { revision &+= 1 }
         if pane.hasColumns {
-            ResultGrid(header: pane.header, rows: pane.body)
+            DataGrid(
+                columns: pane.columns,
+                rowCount: pane.result?.rows.count ?? 0,
+                contentRevision: pane.revision,
+                cell: { row, column in pane.cell(row: row, column: column) }
+            )
         } else {
             VStack(alignment: .leading) {
                 HStack {

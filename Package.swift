@@ -9,11 +9,11 @@ let swiftCrossUI: Package.Dependency =
     if let path = ProcessInfo.processInfo.environment["SDBUI_SCUI_PATH"] {
         .package(path: path)
     } else {
-        // Fork of moreSwift/swift-cross-ui 0.10.0 with GtkBackend performance
-        // patches (memoized text measurement, single-mutation CSS updates).
+        // Fork of moreSwift/swift-cross-ui 0.10.0 with GtkBackend fixes and
+        // performance patches, plus the virtualized DataGrid view.
         .package(
             url: "https://github.com/pragnesh/swift-cross-ui",
-            branch: "sdbui-text-measure-cache"
+            branch: "sdbui-data-grid"
         )
     }
 

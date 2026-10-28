@@ -1,5 +1,5 @@
 {
-  "originHash" : "69ed5330277ee9eb8ac2a0a6373a4bd99a655b4348600a27f5bcdf20988adac7",
+  "originHash" : "9f1c6bc1a379e8c15c50c6a3f2ce0091417e2c25e534786d3be29262d8ae9b48",
   "pins" : [
     {
       "identity" : "androidkit",
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pragnesh/swift-cross-ui",
       "state" : {
-        "branch" : "sdbui-text-measure-cache",
-        "revision" : "e0458a22fb1e19772fe9bde23f05cc8919daed57"
+        "branch" : "sdbui-data-grid",
+        "revision" : "0faa23cff9c8385f51674bb2a93f2ab54449c675"
       }
     },
     {

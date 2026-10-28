@@ -61,7 +61,9 @@ final class BrowserModel {
 
     // MARK: Panes
 
-    let pageSize = 100
+    /// Rows per Content page (as in Sequel Ace). The grid is virtualized, so
+    /// this mostly costs fetch time.
+    let pageSize = 1000
     @ObservationIgnored private(set) lazy var contentPane = makePane()
     @ObservationIgnored private(set) lazy var structurePane = makePane()
     @ObservationIgnored private(set) lazy var indexPane = makePane()
@@ -110,7 +112,7 @@ final class BrowserModel {
     ]
 
     private func makePane() -> ResultPane {
-        let pane = ResultPane(pageSize: pageSize)
+        let pane = ResultPane()
         pane.onChange = { [weak self] in self?.stateChanged() }
         return pane
     }
@@ -171,13 +173,7 @@ final class BrowserModel {
         }
         if let profile = environment["SDBUI_PROFILE"] {
             selectedProfileID = profile
-            // Connecting takes ~50 ms; let the first render finish first, or
-            // SwiftCrossUI can miss the change and keep showing the
-            // connection screen.
-            Task {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                connectSelectedProfile()
-            }
+            connectSelectedProfile()
         }
     }
 

@@ -16,7 +16,6 @@ struct QueryTab: View {
                 emptyText: "Write a query and press Run."
             )
             .frame(maxHeight: .infinity)
-            QueryPager(model: model)
         }
         .padding()
     }
@@ -87,40 +86,8 @@ struct SQLEditor: View {
     }
 }
 
-/// Client-side pages of the query result.
-struct QueryPager: View {
-    var model: BrowserModel
-    @State private var revision = 0
-
-    var body: some View {
-        let _ = revision
-        let _ = model.watch("query-pager", of: { model.queryPane.revision }) { revision &+= 1 }
-        let pane = model.queryPane
-        if let result = pane.result, !result.columns.isEmpty {
-            HStack {
-                Button("◀ Previous") { pane.showPage(pane.page - 1) }
-                    .disabled(pane.page == 0)
-                    .fixedSize()
-                Text(pageLabel(result))
-                    .fixedSize()
-                Button("Next ▶") { pane.showPage(pane.page + 1) }
-                    .disabled(pane.page + 1 >= pane.pageCount)
-                    .fixedSize()
-                Spacer()
-            }
-        }
-    }
-
-    private func pageLabel(_ result: QueryResult) -> String {
-        let range = model.queryPane.pageRange
-        guard !range.isEmpty else { return "No rows" }
-        return "Rows \(range.lowerBound + 1)–\(range.upperBound) of \(result.rows.count)"
-            + (result.truncated ? "+" : "")
-    }
-}
-
-/// A grid of text (see ``ResultText``) that scrolls both ways and stays in
-/// the top-leading corner when it's smaller than the viewport.
+/// Monospaced text that scrolls both ways and stays in the top-leading
+/// corner when it's smaller than the viewport (used for CREATE statements).
 struct ResultGrid: View {
     var header: String
     var rows: String
