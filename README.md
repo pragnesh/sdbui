@@ -40,13 +40,21 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   Structure / Content / Table Info / Query tabs
 - **Sidebar:** the selected database's tables (via `AdbcConnectionGetObjects`)
   with a filter
-- **Content:** browse a table 100 rows at a time (server-side `LIMIT`/`OFFSET`)
-  with a column / operator / value filter bar
+- **Content:** browse a table 1000 rows at a time (server-side `LIMIT`/`OFFSET`)
+  with a column / operator / value filter bar; click a header to sort
+  (`ORDER BY`)
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
 - **Table Info:** engine, row estimate, sizes, collation, … and the
   `CREATE TABLE` statement (MySQL)
-- **Query:** SQL editor, Run / Cancel (`AdbcConnectionCancel`), row limit,
-  CSV export
+- **Query:** SQL editor; Ctrl+Enter runs the selection or the statement at
+  the cursor, Run All runs every statement; Cancel (`AdbcConnectionCancel`),
+  row limit, CSV export
+
+Results are shown in a virtualized grid (GTK `GtkColumnView`): only the
+visible cells are formatted and drawn, so large results scroll smoothly.
+Numbers are right-aligned and headers show each column's type. Click a header
+to sort; select rows with Shift/Ctrl-click and press Ctrl+C, or right-click a
+cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
 Structure and Table Info use `information_schema` / `pg_catalog` for MySQL,
 MariaDB and PostgreSQL; other databases show the columns ADBC reports.
@@ -54,7 +62,6 @@ MariaDB and PostgreSQL; other databases show the columns ADBC reports.
 Also:
 
 - Profile list and URI connect; vendor name/version from `GetInfo`
-- Results as a monospaced, selectable text grid with typed headers
 - Arrow types: ints, floats, bool, utf8/large/view, binary, decimal128/256,
   date/time/timestamp (with time zones), duration, interval, list, struct, map,
   union, dictionary
@@ -115,10 +122,10 @@ Profiles that go through SSH tunnels need the tunnels running first
 ## Limitations
 
 - One statement per Run (drivers generally reject multi-statement strings).
-- Results keep at most "Max rows" rows; cells are cut at 500 characters
-  (also in the CSV export) and at 48 characters in the grid.
+- The Query tab keeps at most "Max rows" rows. The grid shows up to 1000
+  characters per cell; copy and CSV export use full values.
 - The sidebar lists at most 100 tables per database; use the filter to find others.
-- Content browsing is read-only (no cell editing).
+- Results are read-only (no cell editing).
 
 ## Performance notes
 

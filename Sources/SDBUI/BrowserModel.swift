@@ -64,10 +64,19 @@ final class BrowserModel {
     /// Rows per Content page (as in Sequel Ace). The grid is virtualized, so
     /// this mostly costs fetch time.
     let pageSize = 1000
-    @ObservationIgnored private(set) lazy var contentPane = makePane()
+    @ObservationIgnored private(set) lazy var contentPane: ResultPane = {
+        let pane = makePane()
+        // Content is paged from the server, so sorting is an ORDER BY.
+        pane.sortHandler = { [weak self] sort in self?.sortContent(by: sort) }
+        return pane
+    }()
     @ObservationIgnored private(set) lazy var structurePane = makePane()
     @ObservationIgnored private(set) lazy var indexPane = makePane()
-    @ObservationIgnored private(set) lazy var infoPane = makePane()
+    @ObservationIgnored private(set) lazy var infoPane: ResultPane = {
+        let pane = makePane()
+        pane.isSortable = false  // property/value pairs
+        return pane
+    }()
     @ObservationIgnored private(set) lazy var queryPane = makePane()
     @ObservationIgnored private(set) var createStatement = "" { didSet { stateChanged() } }
 
@@ -78,6 +87,7 @@ final class BrowserModel {
     @ObservationIgnored private(set) var contentFilter: SQLDialect.Filter? {
         didSet { stateChanged() }
     }
+    @ObservationIgnored private(set) var contentSort: DataGridSort?
     /// Columns offered by the filter bar (from the unfiltered content).
     @ObservationIgnored private(set) var contentColumns: [String] = [] { didSet { stateChanged() } }
     @ObservationIgnored var filterColumn: String? { didSet { stateChanged() } }
@@ -114,6 +124,12 @@ final class BrowserModel {
     private func makePane() -> ResultPane {
         let pane = ResultPane()
         pane.onChange = { [weak self] in self?.stateChanged() }
+        pane.copyContext = { [weak self] in
+            guard let self else { return (.generic, "table_name") }
+            let dialect = dialect
+            let table = selectedTable.map { dialect.qualifiedName(of: $0) }
+            return (dialect, table ?? dialect.quote("table_name"))
+        }
         return pane
     }
 
@@ -330,6 +346,7 @@ final class BrowserModel {
         loadedTables = [:]
         contentOffset = 0
         contentFilter = nil
+        contentSort = nil
         contentColumns = []
         filterColumn = nil
         clearTablePanes()
@@ -397,8 +414,13 @@ final class BrowserModel {
     // MARK: Content tab
 
     private func loadContent(_ table: TableInfo) {
+        let orderBy = contentSort.flatMap { sort in
+            contentColumns.indices.contains(sort.column)
+                ? (column: contentColumns[sort.column], ascending: sort.ascending) : nil
+        }
         let sql = dialect.browseSQL(
-            table, filter: contentFilter, limit: pageSize + 1, offset: contentOffset)
+            table, filter: contentFilter, orderBy: orderBy, limit: pageSize + 1,
+            offset: contentOffset)
         errorMessage = nil
         statusMessage = "Loading \(table.name)…"
         Task {
@@ -407,9 +429,9 @@ final class BrowserModel {
             switch outcome {
                 case .success(var result):
                     // One extra row tells whether there's a next page.
-                    contentHasMore = result.rows.count > pageSize
-                    result.rows = Array(result.rows.prefix(pageSize))
-                    contentPane.show(result)
+                    contentHasMore = result.rowCount > pageSize
+                    result.limit(to: pageSize)
+                    contentPane.show(result, sortedBy: orderBy == nil ? nil : contentSort)
                     if contentFilter == nil {
                         contentColumns = result.columns.map(\.name)
                     }
@@ -424,10 +446,17 @@ final class BrowserModel {
     }
 
     var contentRowsLabel: String {
-        let count = contentPane.result?.rows.count ?? 0
+        let count = contentPane.result?.rowCount ?? 0
         guard count > 0 else { return contentFilter == nil ? "No rows" : "No matching rows" }
         let more = contentHasMore ? "+" : ""
         return "Rows \(contentOffset + 1)–\(contentOffset + count)\(more)"
+    }
+
+    private func sortContent(by sort: DataGridSort) {
+        guard let table = selectedTable, sort != contentSort else { return }
+        contentSort = sort
+        contentOffset = 0
+        loadContent(table)
     }
 
     func showContentPage(next: Bool) {
@@ -501,7 +530,8 @@ final class BrowserModel {
                 case .success(let result) = await fetch(createSQL),
                 selectedTableID == table.id
             {
-                createStatement = result.rows.first?.last.flatMap { $0 } ?? ""
+                createStatement =
+                    result.cell(0, result.columns.count - 1, maxLength: nil) ?? ""
             }
             if selectedTableID == table.id {
                 statusMessage = "Information about \(table.name)"
@@ -511,7 +541,7 @@ final class BrowserModel {
 
     /// A one-row result as Property/Value rows.
     private static func transposed(_ result: QueryResult) -> QueryResult {
-        let row = result.rows.first ?? []
+        let row = result.rowCount > 0 ? result.row(0) : []
         return QueryResult(
             columns: [.init(name: "Property", type: ""), .init(name: "Value", type: "")],
             rows: result.columns.enumerated().map { index, column in
@@ -530,30 +560,63 @@ final class BrowserModel {
         sqlRevision += 1
     }
 
+    /// Runs every statement in the editor (the Run button).
     func runQuery() {
+        run(dialect.statements(in: sql).map(\.text))
+    }
+
+    /// Ctrl+Enter: runs the selected statements, or else the statement the
+    /// cursor is in.
+    func runCurrentStatement(_ submission: TextEditorSubmission) {
+        sql = submission.text
+        if let selected = submission.selectedText {
+            run(dialect.statements(in: selected).map(\.text))
+        } else {
+            run(dialect.statement(in: submission.text, at: submission.cursor).map { [$0.text] } ?? [])
+        }
+    }
+
+    /// Runs statements one after another, stopping at the first error, and
+    /// shows the last result that has columns.
+    private func run(_ statements: [String]) {
         guard connection != nil, canRun else { return }
-        var statement = sql.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !statement.isEmpty else {
+        guard !statements.isEmpty else {
             statusMessage = "Nothing to run"
             return
-        }
-        while statement.hasSuffix(";") {
-            statement = String(statement.dropLast()).trimmingCharacters(in: .whitespaces)
         }
 
         isRunning = true
         errorMessage = nil
-        statusMessage = "Running…"
         Task {
-            let outcome = await fetch(statement, maxRows: maxRows ?? 10_000)
+            var shown: QueryResult?
+            var elapsed = Duration.zero
+            for (index, statement) in statements.enumerated() {
+                statusMessage =
+                    statements.count > 1
+                    ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
+                switch await fetch(statement, maxRows: maxRows ?? 10_000) {
+                    case .success(let result):
+                        elapsed += result.elapsed
+                        if !result.columns.isEmpty || shown?.columns.isEmpty != false {
+                            shown = result
+                        }
+                    case .failure(let error):
+                        isRunning = false
+                        statusMessage = "Query failed"
+                        errorMessage =
+                            statements.count > 1
+                            ? "Statement \(index + 1) of \(statements.count) failed: \(error)" : "\(error)"
+                        return
+                }
+            }
             isRunning = false
-            switch outcome {
-                case .success(let result):
-                    queryPane.show(result)
-                    statusMessage = Self.summary(of: result)
-                case .failure(let error):
-                    statusMessage = "Query failed"
-                    errorMessage = "\(error)"
+            if let shown {
+                queryPane.show(shown)
+                statusMessage =
+                    statements.count > 1
+                    ? "\(statements.count) statements in \(Self.format(elapsed)); last result: "
+                        + Self.summary(of: shown)
+                    : Self.summary(of: shown)
             }
         }
     }
@@ -583,7 +646,7 @@ final class BrowserModel {
             }
             return "Statement executed in \(time)"
         }
-        let rows = result.rows.count
+        let rows = result.rowCount
         let more = result.truncated ? " (limit reached; more rows available)" : ""
         return "\(rows) row\(rows == 1 ? "" : "s")\(more) in \(time)"
     }
@@ -592,20 +655,14 @@ final class BrowserModel {
 
     func exportCSV(_ pane: ResultPane, to url: URL) {
         guard let result = pane.result else { return }
-        func escape(_ field: String?) -> String {
-            guard let field else { return "" }
-            if field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) {
-                return "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-            }
-            return field
-        }
+        let escape = ResultCopy.csvField
         var csv = result.columns.map { escape($0.name) }.joined(separator: ",") + "\n"
-        for row in result.rows {
-            csv += row.map(escape).joined(separator: ",") + "\n"
+        for row in 0..<result.rowCount {
+            csv += result.row(row).map(escape).joined(separator: ",") + "\n"
         }
         do {
             try csv.write(to: url, atomically: true, encoding: .utf8)
-            statusMessage = "Exported \(result.rows.count) rows to \(url.lastPathComponent)"
+            statusMessage = "Exported \(result.rowCount) rows to \(url.lastPathComponent)"
         } catch {
             errorMessage = "Export failed: \(error.localizedDescription)"
         }

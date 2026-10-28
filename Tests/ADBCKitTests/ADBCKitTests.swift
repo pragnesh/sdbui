@@ -139,6 +139,10 @@ final class SQLDialectTests: XCTestCase {
             SQLDialect.mysql.browseSQL(table, filter: filter, limit: 101, offset: 200),
             #"SELECT * FROM `shop`.`order items` WHERE `name` LIKE '%50\\%\\_off%' LIMIT 101 OFFSET 200"#)
         XCTAssertEqual(
+            SQLDialect.postgres.browseSQL(
+                table, filter: nil, orderBy: ("total", false), limit: 1001, offset: 1000),
+            #"SELECT * FROM "shop"."order items" ORDER BY "total" DESC LIMIT 1001 OFFSET 1000"#)
+        XCTAssertEqual(
             SQLDialect.postgres.whereClause(for: filter),
             #"CAST("name" AS TEXT) LIKE '%50\%\_off%'"#)
         XCTAssertEqual(
@@ -155,5 +159,93 @@ final class SQLDialectTests: XCTestCase {
         XCTAssertTrue(sql.contains("TABLE_SCHEMA = 'o''shop' AND TABLE_NAME = 't'"))
         XCTAssertNil(SQLDialect.generic.columnsSQL(table))
         XCTAssertNil(SQLDialect.postgres.createTableSQL(table))
+    }
+}
+
+final class QueryResultTests: XCTestCase {
+    let result = QueryResult(
+        columns: [.init(name: "id", type: "int64"), .init(name: "name", type: "utf8")],
+        rows: [["10", "b"], ["9", nil], [nil, "a"], ["100", "c"]])
+
+    func testCellsAndTruncation() {
+        XCTAssertEqual(result.rowCount, 4)
+        XCTAssertEqual(result.cell(0, 1), "b")
+        XCTAssertNil(result.cell(1, 1))
+        XCTAssertNil(result.cell(9, 0))
+        let long = QueryResult(columns: [.init(name: "t", type: "utf8")], rows: [["abcdef"]])
+        XCTAssertEqual(long.cell(0, 0, maxLength: 3), "abc…")
+        XCTAssertEqual(long.cell(0, 0, maxLength: nil), "abcdef")
+    }
+
+    func testLimit() {
+        var limited = result
+        limited.limit(to: 2)
+        XCTAssertEqual(limited.rowCount, 2)
+        XCTAssertEqual(limited.row(1), ["9", nil])
+    }
+
+    func testSortNumericAndText() {
+        let byID = result.sorted(byColumn: 0, ascending: true)
+        XCTAssertEqual((0..<4).map { byID.cell($0, 0) }, [nil, "9", "10", "100"])
+        let byIDDescending = result.sorted(byColumn: 0, ascending: false)
+        XCTAssertEqual((0..<4).map { byIDDescending.cell($0, 0) }, ["100", "10", "9", nil])
+        let byName = result.sorted(byColumn: 1, ascending: true)
+        XCTAssertEqual((0..<4).map { byName.cell($0, 1) }, [nil, "a", "b", "c"])
+        // Sorting a sorted result sorts the displayed rows, and limit keeps order.
+        var resorted = byName.sorted(byColumn: 0, ascending: false)
+        resorted.limit(to: 2)
+        XCTAssertEqual(resorted.row(0), ["100", "c"])
+        XCTAssertEqual(resorted.row(1), ["10", "b"])
+    }
+
+    func testNumericColumnTypes() {
+        XCTAssertTrue(ResultColumn(name: "x", type: "decimal(10,2)").isNumeric)
+        XCTAssertTrue(ResultColumn(name: "x", type: "uint32").isNumeric)
+        XCTAssertFalse(ResultColumn(name: "x", type: "utf8").isNumeric)
+        XCTAssertFalse(ResultColumn(name: "x", type: "timestamp[us]").isNumeric)
+    }
+}
+
+final class SQLStatementsTests: XCTestCase {
+    func testSplitsOutsideQuotesAndComments() {
+        let script = """
+            SELECT 'a;b', "c;d", `e;f` FROM t; -- not; here
+            /* also; not */ UPDATE t SET x = 'it''s; fine';
+            ;
+            SELECT 3
+            """
+        let texts = SQLDialect.mysql.statements(in: script).map(\.text)
+        XCTAssertEqual(texts, [
+            #"SELECT 'a;b', "c;d", `e;f` FROM t"#,
+            "-- not; here\n/* also; not */ UPDATE t SET x = 'it''s; fine'",
+            "SELECT 3",
+        ])
+    }
+
+    func testCommentOnlyAndEmptyStatementsAreSkipped() {
+        XCTAssertEqual(SQLDialect.postgres.statements(in: "-- just a comment\n;  ;").count, 0)
+        XCTAssertEqual(SQLDialect.postgres.statements(in: "").count, 0)
+    }
+
+    func testMySQLBackslashEscapesAndHashComments() {
+        XCTAssertEqual(
+            SQLDialect.mysql.statements(in: #"SELECT 'a\';b'; # c;d"#).map(\.text),
+            [#"SELECT 'a\';b'"#])
+        // In PostgreSQL a backslash doesn't escape and # isn't a comment.
+        XCTAssertEqual(
+            SQLDialect.postgres.statements(in: #"SELECT 'a\'; SELECT 1 # 2"#).map(\.text),
+            [#"SELECT 'a\'"#, "SELECT 1 # 2"])
+    }
+
+    func testStatementAtCursor() {
+        let script = "SELECT 1;\nSELECT 2;\n\nSELECT 3"
+        func at(_ cursor: Int) -> String? {
+            SQLDialect.mysql.statement(in: script, at: cursor)?.text
+        }
+        XCTAssertEqual(at(0), "SELECT 1")
+        XCTAssertEqual(at(9), "SELECT 1")  // right after the semicolon
+        XCTAssertEqual(at(12), "SELECT 2")
+        XCTAssertEqual(at(script.unicodeScalars.count), "SELECT 3")
+        XCTAssertNil(SQLDialect.mysql.statement(in: "  ", at: 1))
     }
 }

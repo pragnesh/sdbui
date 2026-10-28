@@ -41,7 +41,7 @@ struct QueryToolbar: View {
         HStack {
             // A constant label: a size change here would re-lay-out the pane
             // twice per query (the status bar already says "Running…").
-            Button("Run") { model.runQuery() }
+            Button("Run All") { model.runQuery() }
                 .disabled(!model.canRun)
                 .fixedSize()
             Button("Cancel") { model.cancelQuery() }
@@ -49,6 +49,10 @@ struct QueryToolbar: View {
                 .fixedSize()
             Button("Export CSV") { export() }
                 .disabled(!model.queryPane.hasColumns)
+                .fixedSize()
+            Text("Ctrl+Enter runs the current statement or selection")
+                .font(.caption)
+                .foregroundColor(.gray)
                 .fixedSize()
             Spacer()
             Text("Max rows")
@@ -77,7 +81,9 @@ struct SQLEditor: View {
         // `sqlRevision`), not on every keystroke.
         let _ = revision
         let _ = model.watch("editor", of: { model.sqlRevision }) { revision &+= 1 }
-        TextEditor(text: model.binding(\.sql))
+        TextEditor(text: model.binding(\.sql)) { submission in
+            model.runCurrentStatement(submission)
+        }
             .font(.system(size: 13, design: .monospaced))
             .padding(4)
             .background(Color.adaptive(light: Color(white: 0.95), dark: Color(white: 0.15)))

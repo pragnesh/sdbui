@@ -242,12 +242,7 @@ struct PaneGrid: View {
         let _ = revision
         let _ = model.watch(key, of: { pane.revision }) { revision &+= 1 }
         if pane.hasColumns {
-            DataGrid(
-                columns: pane.columns,
-                rowCount: pane.result?.rows.count ?? 0,
-                contentRevision: pane.revision,
-                cell: { row, column in pane.cell(row: row, column: column) }
-            )
+            grid()
         } else {
             VStack(alignment: .leading) {
                 HStack {
@@ -257,6 +252,26 @@ struct PaneGrid: View {
                 Spacer()
             }
         }
+    }
+
+    private func grid() -> DataGrid {
+        let pane = pane
+        let onSort: (@MainActor (DataGridSort) -> Void)?
+        if pane.isSortable {
+            onSort = { sort in pane.requestSort(sort) }
+        } else {
+            onSort = nil
+        }
+        return DataGrid(
+            columns: pane.columns,
+            rowCount: pane.result?.rowCount ?? 0,
+            contentRevision: pane.revision,
+            sort: pane.sort,
+            onSort: onSort,
+            copyCommands: ResultCopy.titles,
+            onCopy: { request in pane.copyText(for: request) },
+            cell: { row, column in pane.cell(row: row, column: column) }
+        )
     }
 }
 

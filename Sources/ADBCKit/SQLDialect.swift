@@ -115,13 +115,17 @@ public enum SQLDialect: Sendable, Equatable {
             .replacingOccurrences(of: "_", with: "\\_")
     }
 
-    /// One page of a table's rows.
+    /// One page of a table's rows, optionally filtered and ordered by a column.
     public func browseSQL(
-        _ table: TableInfo, filter: Filter?, limit: Int, offset: Int
+        _ table: TableInfo, filter: Filter?, orderBy: (column: String, ascending: Bool)? = nil,
+        limit: Int, offset: Int
     ) -> String {
         var sql = "SELECT * FROM \(qualifiedName(of: table))"
         if let filter {
             sql += " WHERE " + whereClause(for: filter)
+        }
+        if let orderBy {
+            sql += " ORDER BY \(quote(orderBy.column)) \(orderBy.ascending ? "ASC" : "DESC")"
         }
         sql += " LIMIT \(limit)"
         if offset > 0 {

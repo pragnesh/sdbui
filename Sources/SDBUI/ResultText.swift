@@ -6,10 +6,12 @@ enum ResultText {
 
     /// Column widths in characters, from the header and the first rows.
     static func columnWidths(of result: QueryResult) -> [Int] {
-        let sample = result.rows.prefix(200)
+        let sample = 0..<min(result.rowCount, 200)
         return result.columns.indices.map { column in
             let header = max(result.columns[column].name.count, result.columns[column].type.count)
-            let longest = sample.lazy.map { cell($0[column]).count }.max() ?? 0
+            let longest = sample.lazy
+                .map { cell(result.cell($0, column, maxLength: maxColumnWidth)).count }
+                .max() ?? 0
             return min(max(header, longest, 4), maxColumnWidth)
         }
     }

@@ -25,37 +25,6 @@ public struct TableInfo: Sendable, Hashable, Identifiable {
     }
 }
 
-public struct ResultColumn: Sendable, Hashable {
-    public var name: String
-    public var type: String
-
-    public init(name: String, type: String) {
-        self.name = name
-        self.type = type
-    }
-}
-
-public struct QueryResult: Sendable {
-    public var columns: [ResultColumn]
-    /// Cell text; `nil` is SQL NULL.
-    public var rows: [[String?]]
-    /// True when the result had more rows than `maxRows` and was cut short.
-    public var truncated: Bool
-    public var rowsAffected: Int64?
-    public var elapsed: Duration
-
-    public init(
-        columns: [ResultColumn], rows: [[String?]], truncated: Bool = false,
-        rowsAffected: Int64? = nil, elapsed: Duration = .zero
-    ) {
-        self.columns = columns
-        self.rows = rows
-        self.truncated = truncated
-        self.rowsAffected = rowsAffected
-        self.elapsed = elapsed
-    }
-}
-
 /// An open ADBC connection.
 ///
 /// Statements are serialized with a lock (ADBC connections are not
@@ -68,9 +37,6 @@ public final class ADBCConnection: @unchecked Sendable {
     public let source: ConnectionSource
     public private(set) var vendorName: String?
     public private(set) var vendorVersion: String?
-
-    /// Maximum number of characters kept per cell.
-    public var maxCellLength = 500
 
     public static func open(_ source: ConnectionSource) throws -> ADBCConnection {
         let driver: String
@@ -138,26 +104,38 @@ public final class ADBCConnection: @unchecked Sendable {
         }
         defer { cadbc_stream_release(&stream) }
 
-        var rows: [[String?]] = []
-        var truncated = false
-        let schema = try readStream(&stream) { batch in
-            let remaining = maxRows - rows.count
-            if batch.length > remaining {
-                truncated = true
+        // Keep the record batches; cells are formatted on demand (see
+        // QueryResult). Batches stay valid after the stream is released.
+        var schema = ArrowSchema()
+        guard cadbc_stream_get_schema(&stream, &schema, &error) == 0 else {
+            throw takeError(error, fallback: "Reading result schema failed")
+        }
+        defer { cadbc_schema_release(&schema) }
+        let field = ArrowField(&schema)
+
+        var arrays: [ArrowArray] = []
+        var rowCount = 0
+        do {
+            while rowCount <= maxRows {
+                var array = ArrowArray()
+                guard cadbc_stream_get_next(&stream, &array, &error) == 0 else {
+                    throw takeError(error, fallback: "Reading results failed")
+                }
+                guard array.release != nil else { break }
+                arrays.append(array)
+                rowCount += Int(array.length)
             }
-            for row in 0..<min(batch.length, remaining) {
-                rows.append(batch.children.map { column in
-                    let value = column.value(row)
-                    return value.isNull ? nil : self.cellText(value)
-                })
+        } catch {
+            for index in arrays.indices {
+                cadbc_array_release(&arrays[index])
             }
-            return !truncated
+            throw error
         }
 
         return QueryResult(
-            columns: schema.children.map { ResultColumn(name: $0.name, type: $0.typeName) },
-            rows: rows,
-            truncated: truncated,
+            columns: field.children.map { ResultColumn(name: $0.name, type: $0.typeName) },
+            storage: ArrowStorage(field: field, arrays: arrays, rowLimit: maxRows),
+            truncated: rowCount > maxRows,
             rowsAffected: rowsAffected >= 0 ? rowsAffected : nil,
             elapsed: clock.now - start
         )
@@ -288,14 +266,6 @@ public final class ADBCConnection: @unchecked Sendable {
             guard try body(ArrowArrayView(field: field, array: array)) else { break }
         }
         return field
-    }
-
-    private func cellText(_ value: ArrowValue) -> String {
-        var text = value.description
-        if text.count > maxCellLength {
-            text = String(text.prefix(maxCellLength)) + "…"
-        }
-        return text
     }
 }
 
