@@ -33,10 +33,12 @@ let package = Package(
         ),
         // Swift API: driver manifests, connection profiles, Arrow decoding.
         .target(name: "ADBCKit", dependencies: ["CADBC"]),
+        .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3", providers: [.apt(["libsqlite3-dev"])]),
         .executableTarget(
             name: "SDBUI",
             dependencies: [
                 "ADBCKit",
+                "CSQLite",
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 // DefaultBackend also drags in the Windows-only WinUIInterop
                 // target, which Swift 6.4's build system compiles on Linux too.
@@ -49,6 +51,6 @@ let package = Package(
             ]
         ),
         .testTarget(name: "ADBCKitTests", dependencies: ["ADBCKit"]),
-        .testTarget(name: "SDBUITests", dependencies: ["SDBUI"]),
+        .testTarget(name: "SDBUITests", dependencies: ["SDBUI", "CSQLite"]),
     ]
 )

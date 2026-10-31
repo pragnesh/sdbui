@@ -53,9 +53,12 @@ final class BrowserModel {
 
     init(
         openConnection: @escaping @Sendable (ConnectionSource) throws -> ADBCConnection = { try ADBCConnection.open($0) },
-        healthCheckIntervalNanoseconds: UInt64 = 5_000_000_000
+        healthCheckIntervalNanoseconds: UInt64 = 5_000_000_000,
+        queryLibrary: QueryLibraryStore = QueryLibraryStore()
     ) {
         self.openConnection = openConnection
+        self.queryLibrary = queryLibrary
+        self.libraryFeedback = queryLibrary.loadError ?? ""
         self.healthCheckIntervalNanoseconds = healthCheckIntervalNanoseconds
     }
 
@@ -124,6 +127,66 @@ final class BrowserModel {
     }
     /// What's typed in the filter value field (the GTK entry owns the text).
     @ObservationIgnored var filterValue = ""
+
+    // MARK: Query library
+
+    @ObservationIgnored let queryLibrary: QueryLibraryStore
+    @ObservationIgnored private(set) var librarySection: QueryLibrarySection? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var libraryRevision = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var libraryFeedback = "" { didSet { stateChanged() } }
+
+    func toggleLibrary(_ section: QueryLibrarySection) {
+        librarySection = librarySection == section ? nil : section
+    }
+
+    func loadLibrarySQL(_ text: String) {
+        isBrowsing = false
+        setSQL(text)
+        libraryFeedback = "Loaded into the editor. Choose Run All or Ctrl+Enter to execute."
+    }
+
+    private func recordHistory(_ statement: String, connectionTitle: String) {
+        do {
+            try queryLibrary.record(sql: statement, connection: connectionTitle)
+            libraryRevision += 1
+        } catch {
+            libraryFeedback = "History could not be saved: \(error)"
+        }
+    }
+
+    func clearQueryHistory() {
+        updateLibrary { try queryLibrary.clearHistory() }
+    }
+
+    func deleteHistoryEntry(_ id: UUID) {
+        updateLibrary { try queryLibrary.deleteHistory(id) }
+    }
+
+    func saveQuerySnippet(id: UUID?, name: String) -> UUID? {
+        do {
+            let saved = try queryLibrary.saveSnippet(id: id, name: name, sql: sql)
+            libraryRevision += 1
+            libraryFeedback = id == nil ? "Snippet saved." : "Snippet updated from the editor."
+            return saved
+        } catch {
+            libraryFeedback = "Snippet could not be saved: \(error)"
+            return nil
+        }
+    }
+
+    func deleteQuerySnippet(_ id: UUID) {
+        updateLibrary { try queryLibrary.deleteSnippet(id) }
+    }
+
+    private func updateLibrary(_ change: () throws -> Void) {
+        do {
+            try change()
+            libraryRevision += 1
+            libraryFeedback = ""
+        } catch {
+            libraryFeedback = "Query library could not be saved: \(error)"
+        }
+    }
 
     // MARK: Query tab
 
@@ -797,6 +860,7 @@ final class BrowserModel {
         isRunning = true
         errorMessage = nil
         let revision = sessionRevision
+        let historyConnection = connectionTitle
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
             var shown: QueryResult?
@@ -805,6 +869,8 @@ final class BrowserModel {
                 statusMessage =
                     statements.count > 1
                     ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
+                // Record only statements we attempt, including failures, never table loads or health probes.
+                recordHistory(statement, connectionTitle: historyConnection)
                 let outcome = await fetch(statement, maxRows: maxRows ?? 10_000)
                 guard revision == sessionRevision, canUseConnection else { return }
                 switch outcome {

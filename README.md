@@ -69,6 +69,19 @@ Also:
   with owner-only permissions (passwords remain plain text). Editing a favorite
   preserves its extra driver options and URI parameters; saving under a new
   name creates a copy.
+- Persistent **History** and **Snippets** panels beside the SQL editor. Search
+  history by SQL or connection name; load entries into the editor, delete them,
+  or clear history. The last 1,000,000 attempted manual statements are kept (including
+  failed statements); table browsing, metadata and health checks are excluded.
+  Snippets support named save, rename/update from the editor, load and delete.
+  Loading history or a snippet does not execute SQL.
+  History is paged 100 queries at a time, with cancellable background search.
+  Both are stored in `~/.local/share/sdbui/query-library.sqlite3` on Linux
+  (`XDG_DATA_HOME` is respected), or `~/Library/Application Support/sdbui/` on
+  macOS, with owner-only file permissions. SQL is stored in plain text and may
+  include sensitive literals; history can be cleared independently of snippets.
+  Existing JSON libraries migrate automatically once; the original JSON file is
+  preserved as a backup and can be removed manually after verifying migration.
 - Lost-connection detection on database/SSH errors and idle health checks
   (every five seconds, skipped while queries are running). Reconnect reuses the
   original settings, restarts SSH when needed, and preserves the SQL editor.
@@ -92,7 +105,7 @@ tar zxf swiftly-$(uname -m).tar.gz && ./swiftly init
 . ~/.local/share/swiftly/env.sh
 
 # 2. GTK 4 headers (once)
-sudo apt install libgtk-4-dev clang
+sudo apt install libgtk-4-dev libsqlite3-dev clang
 
 # 3. Build, test, run
 swift build
@@ -131,7 +144,7 @@ push a tag (`git tag v0.2.0 && git push origin v0.2.0`) to publish a
 GitHub Release with the packages, or run the workflow manually to get them
 as a build artifact. The Swift version comes from `.swift-version`.
 
-Target machines need GTK 4 (`libgtk-4-1`) and ADBC drivers installed with
+Target machines need GTK 4 (`libgtk-4-1`), SQLite (`libsqlite3-0`) and ADBC drivers installed with
 dbc. The first release build compiles all dependencies with optimisation
 and takes around 10 minutes; later ones are incremental.
 

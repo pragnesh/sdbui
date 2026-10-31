@@ -16,6 +16,14 @@ private final class OpeningGate: @unchecked Sendable {
 
 @MainActor
 final class ReconnectionTests: XCTestCase {
+    private func makeModel(
+        openConnection: @escaping @Sendable (ConnectionSource) throws -> ADBCConnection = { try ADBCConnection.open($0) },
+        healthCheckIntervalNanoseconds: UInt64 = 5_000_000_000
+    ) -> BrowserModel {
+        BrowserModel(openConnection: openConnection, healthCheckIntervalNanoseconds: healthCheckIntervalNanoseconds,
+                     queryLibrary: QueryLibraryStore(url: nil))
+    }
+
     private func postgresURI() throws -> String {
         guard let uri = ProcessInfo.processInfo.environment["SDBUI_TEST_POSTGRES_URI"] else {
             throw XCTSkip("Set SDBUI_TEST_POSTGRES_URI for reconnect integration tests.")
@@ -50,7 +58,7 @@ final class ReconnectionTests: XCTestCase {
         let table = "reconnect_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         _ = try admin.execute("CREATE TABLE \(table) (value INTEGER)", maxRows: 1)
         defer { _ = try? admin.execute("DROP TABLE \(table)", maxRows: 1) }
-        let model = BrowserModel(healthCheckIntervalNanoseconds: 50_000_000)
+        let model = makeModel(healthCheckIntervalNanoseconds: 50_000_000)
         defer { model.disconnect() }
         try await connect(model, uri: uri)
         let sql = "INSERT INTO \(table) VALUES (1)"
@@ -74,7 +82,7 @@ final class ReconnectionTests: XCTestCase {
     func testQueryFailureDetectsLossAndSQLTransactionErrorsDoNot() async throws {
         let uri = try postgresURI()
         let admin = try ADBCConnection.open(.direct(driver: "postgresql", uri: uri))
-        let model = BrowserModel(healthCheckIntervalNanoseconds: 50_000_000)
+        let model = makeModel(healthCheckIntervalNanoseconds: 50_000_000)
         defer { model.disconnect() }
         try await connect(model, uri: uri)
         model.setSQL("SELEC invalid syntax")
@@ -100,7 +108,7 @@ final class ReconnectionTests: XCTestCase {
         let uri = try postgresURI()
         let admin = try ADBCConnection.open(.direct(driver: "postgresql", uri: uri))
         let gate = OpeningGate()
-        let model = BrowserModel(openConnection: { source in
+        let model = makeModel(openConnection: { source in
             if gate.shouldFail() { throw ADBCError("Test server unavailable") }
             return try ADBCConnection.open(source)
         }, healthCheckIntervalNanoseconds: 50_000_000)
@@ -124,7 +132,7 @@ final class ReconnectionTests: XCTestCase {
     func testDisconnectIgnoresAnInFlightOpen() async throws {
         let uri = try postgresURI()
         let gate = OpeningGate()
-        let model = BrowserModel(openConnection: { source in
+        let model = makeModel(openConnection: { source in
             gate.markStarted()
             gate.release.wait()
             return try ADBCConnection.open(source)
@@ -145,7 +153,7 @@ final class ReconnectionTests: XCTestCase {
 
     func testOldQueryDoesNotOverwriteANewConnection() async throws {
         let uri = try postgresURI()
-        let model = BrowserModel()
+        let model = makeModel()
         defer { model.disconnect() }
         try await connect(model, uri: uri)
         model.setSQL("SELECT pg_sleep(0.5)")
@@ -168,7 +176,7 @@ final class ReconnectionTests: XCTestCase {
         guard let executable = env["SDBUI_TEST_SSH_EXECUTABLE"], let port = env["SDBUI_TEST_SSH_PORT"] else {
             throw XCTSkip("Set SSH integration variables for the tunnel reconnect test.")
         }
-        let model = BrowserModel(openConnection: { source in
+        let model = makeModel(openConnection: { source in
             try ADBCConnection.open(source, sshExecutableURL: URL(fileURLWithPath: executable))
         }, healthCheckIntervalNanoseconds: 50_000_000)
         defer { model.disconnect() }

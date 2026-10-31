@@ -52,10 +52,14 @@ if [ -f "$prefix/share/icons/hicolor/icon-theme.cache" ] \
     gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" 2>/dev/null || true
 fi
 
-# Runtime checks: GTK 4 is required; ADBC drivers are needed to connect.
+# Runtime checks: GTK 4 and SQLite are required; ADBC drivers connect to databases.
 if ! (ldconfig -p 2>/dev/null | grep -q 'libgtk-4\.so\.1'); then
     echo
     echo "warning: GTK 4 was not found. Install it, e.g. 'sudo apt install libgtk-4-1'."
+fi
+if ! (ldconfig -p 2>/dev/null | grep -q 'libsqlite3\.so\.0'); then
+    echo
+    echo "warning: SQLite was not found. Install it, e.g. 'sudo apt install libsqlite3-0'."
 fi
 if ! ls "${XDG_CONFIG_HOME:-$HOME/.config}"/adbc/drivers/*.toml >/dev/null 2>&1 \
     && ! ls /etc/adbc/drivers/*.toml >/dev/null 2>&1; then

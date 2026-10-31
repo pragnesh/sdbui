@@ -6,11 +6,22 @@ import SwiftCrossUI
 /// it here, with a filter bar above the results and a pager below.
 struct QueryTab: View {
     var model: BrowserModel
+    @State private var revision = 0
 
     var body: some View {
+        let _ = revision
+        let _ = model.watch("query-library-layout", of: { model.librarySection?.rawValue }) { revision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
             QueryToolbar(model: model)
-            SQLEditor(model: model)
+            QueryLibraryBar(model: model)
+            HStack(alignment: .top, spacing: 12) {
+                SQLEditor(model: model, height: model.librarySection == nil ? 180 : 360)
+                    .frame(maxWidth: .infinity)
+                if let section = model.librarySection {
+                    QueryLibraryPanel(model: model, section: section)
+                        .frame(width: 400, height: 360)
+                }
+            }
             FilterBar(model: model)
             PaneGrid(
                 model: model, pane: model.queryPane, key: "query-grid",
@@ -52,10 +63,6 @@ struct QueryToolbar: View {
             Button("Export CSV") { export() }
                 .disabled(!model.queryPane.hasColumns)
                 .fixedSize()
-            Text("Ctrl+Enter runs the current statement or selection")
-                .font(.caption)
-                .foregroundColor(.gray)
-                .fixedSize()
             Spacer()
             Text("Max rows")
                 .fixedSize()
@@ -76,6 +83,7 @@ struct QueryToolbar: View {
 
 struct SQLEditor: View {
     var model: BrowserModel
+    var height: Double = 180
     @State private var revision = 0
 
     var body: some View {
@@ -90,7 +98,7 @@ struct SQLEditor: View {
             .padding(4)
             .background(Color.adaptive(light: Color(white: 0.95), dark: Color(white: 0.15)))
             .cornerRadius(4)
-            .frame(height: 180)
+            .frame(height: height)
     }
 }
 

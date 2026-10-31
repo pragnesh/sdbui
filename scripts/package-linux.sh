@@ -112,7 +112,7 @@ Version: $deb_version
 Architecture: $debarch
 Maintainer: pragnesh <pg.radadia@gmail.com>
 Installed-Size: $installed_size
-Depends: libgtk-4-1
+Depends: libgtk-4-1, libsqlite3-0
 Section: database
 Priority: optional
 Homepage: https://github.com/columnar-tech/databow
