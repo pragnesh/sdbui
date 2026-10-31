@@ -248,37 +248,88 @@ void cadbc_close(CAdbcSession* session) {
 
 // MARK: - Queries
 
+// A statement must outlive its result stream. Forward callbacks to the
+// driver's original stream and release it before releasing the statement.
+struct StatementStream {
+  struct ArrowArrayStream stream;
+  struct AdbcStatement statement;
+  struct AdbcDriver* driver;
+};
+
+static int statement_stream_schema(struct ArrowArrayStream* stream,
+                                   struct ArrowSchema* out) {
+  struct StatementStream* owner = stream->private_data;
+  return owner->stream.get_schema(&owner->stream, out);
+}
+
+static int statement_stream_next(struct ArrowArrayStream* stream,
+                                 struct ArrowArray* out) {
+  struct StatementStream* owner = stream->private_data;
+  return owner->stream.get_next(&owner->stream, out);
+}
+
+static const char* statement_stream_error(struct ArrowArrayStream* stream) {
+  struct StatementStream* owner = stream->private_data;
+  return owner->stream.get_last_error
+      ? owner->stream.get_last_error(&owner->stream) : NULL;
+}
+
+static void statement_stream_release(struct ArrowArrayStream* stream) {
+  struct StatementStream* owner = stream->private_data;
+  stream->release = NULL;
+  stream->private_data = NULL;
+  if (owner->stream.release) owner->stream.release(&owner->stream);
+  struct AdbcError error = make_error();
+  owner->driver->StatementRelease(&owner->statement, &error);
+  if (error.release) error.release(&error);
+  free(owner);
+}
+
 AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
                              struct ArrowArrayStream* out, int64_t* rows_affected,
                              char** error_out) {
-  struct AdbcStatement statement;
-  memset(&statement, 0, sizeof(statement));
-  statement.private_driver = &session->driver;
+  struct StatementStream* owner = calloc(1, sizeof(*owner));
+  if (!owner) {
+    set_error(error_out, format_string("out of memory"));
+    return ADBC_STATUS_INTERNAL;
+  }
+  owner->driver = &session->driver;
+  owner->statement.private_driver = &session->driver;
 
   struct AdbcError error = make_error();
-  AdbcStatusCode status =
-      session->driver.StatementNew(&session->connection, &statement, &error);
+  AdbcStatusCode status = session->driver.StatementNew(
+      &session->connection, &owner->statement, &error);
   if (status != ADBC_STATUS_OK) {
     take_error(status, &error, "Failed to create statement", error_out);
+    free(owner);
     return status;
   }
 
   error = make_error();
-  status = session->driver.StatementSetSqlQuery(&statement, sql, &error);
+  status = session->driver.StatementSetSqlQuery(&owner->statement, sql, &error);
   if (status != ADBC_STATUS_OK) {
     take_error(status, &error, "Failed to set SQL query", error_out);
   } else {
     error = make_error();
-    status = session->driver.StatementExecuteQuery(&statement, out, rows_affected, &error);
+    status = session->driver.StatementExecuteQuery(
+        &owner->statement, out ? &owner->stream : NULL, rows_affected, &error);
     if (status != ADBC_STATUS_OK) {
       take_error(status, &error, "Query failed", error_out);
     }
   }
 
-  // Releasing the statement does not invalidate an already-returned stream.
-  struct AdbcError release_error = make_error();
-  session->driver.StatementRelease(&statement, &release_error);
-  if (release_error.release) release_error.release(&release_error);
+  struct ArrowArrayStream wrapped = {
+      .get_schema = statement_stream_schema,
+      .get_next = statement_stream_next,
+      .get_last_error = statement_stream_error,
+      .release = statement_stream_release,
+      .private_data = owner,
+  };
+  if (status == ADBC_STATUS_OK && out && owner->stream.release) {
+    *out = wrapped;
+  } else {
+    statement_stream_release(&wrapped);
+  }
   return status;
 }
 

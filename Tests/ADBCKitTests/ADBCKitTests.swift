@@ -53,6 +53,37 @@ final class TOMLTests: XCTestCase {
 }
 
 final class DiscoveryTests: XCTestCase {
+    func testNestedProfilesAndSearchRootPriority() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first")
+        let second = root.appendingPathComponent("second")
+        for directory in [first, second] {
+            try FileManager.default.createDirectory(
+                at: directory.appendingPathComponent("Work/Production"),
+                withIntermediateDirectories: true)
+        }
+        let content = "driver = \"mysql\"\n[Options]\nuri = \"mysql://user:secret@localhost/db\"\n"
+        for path in ["local.toml", "Work/local.toml", "Work/Production/main.toml"] {
+            try content.write(to: first.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        }
+        try "driver = \"sqlite\"".write(
+            to: second.appendingPathComponent("Work/local.toml"), atomically: true, encoding: .utf8)
+        try "invalid".write(to: first.appendingPathComponent("broken.toml"), atomically: true, encoding: .utf8)
+        let profiles = Discovery.profiles(in: [first, second])
+        XCTAssertEqual(profiles.map(\.id), ["local", "Work/local", "Work/Production/main"])
+        let nested = try XCTUnwrap(profiles.first { $0.id == "Work/local" })
+        XCTAssertEqual(nested.driver, "mysql")
+        XCTAssertEqual(nested.name, "local")
+        XCTAssertEqual(nested.group, "Work")
+        XCTAssertTrue(nested.matches(" WORK "))
+        XCTAssertTrue(nested.matches("MYSQL"))
+        XCTAssertTrue(nested.matches("localhost"))
+        XCTAssertTrue(nested.matches(" "))
+        XCTAssertFalse(nested.matches("secret"))
+        XCTAssertFalse(nested.matches("missing"))
+    }
+
     func testEnvironmentSubstitution() throws {
         setenv("SDBUI_TEST_PASSWORD", "s3cret", 1)
         XCTAssertEqual(

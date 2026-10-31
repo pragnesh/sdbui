@@ -38,7 +38,8 @@ void cadbc_close(CAdbcSession* session);
 
 /// Execute `sql`. On success the result stream is written to `out` (the caller
 /// owns it and must release it with `cadbc_stream_release`) and
-/// `*rows_affected` is set (-1 when unknown).
+/// `*rows_affected` is set (-1 when unknown). The stream retains its statement;
+/// the session must remain open until the stream is released.
 AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
                              struct ArrowArrayStream* out, int64_t* rows_affected,
                              char** error_out);

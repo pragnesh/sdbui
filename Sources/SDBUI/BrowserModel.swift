@@ -182,6 +182,9 @@ final class BrowserModel {
 
     func reloadDiscovery() {
         profiles = Discovery.profiles()
+        if let selectedProfileID, !profiles.contains(where: { $0.id == selectedProfileID }) {
+            self.selectedProfileID = nil
+        }
         drivers = Discovery.installedDrivers()
         if directDriver == nil {
             directDriver = drivers.first
@@ -208,7 +211,8 @@ final class BrowserModel {
 
     func connectSelectedProfile() {
         guard let selectedProfileID else { return }
-        connect(.profile(selectedProfileID), title: selectedProfileID)
+        guard let profile = profiles.first(where: { $0.id == selectedProfileID }) else { return }
+        connect(.profile(profile.url.path), title: profile.id)
     }
 
     func connectDirect() {

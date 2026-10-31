@@ -39,6 +39,19 @@ public struct ConnectionProfile: Sendable, Identifiable, Hashable {
         public var value: String
     }
 
+    /// Names are relative to the profile search root, so equal leaf names in
+    /// different folders remain distinct favorites.
+    public var name: String { id.split(separator: "/").last.map(String.init) ?? id }
+    public var group: String { id.split(separator: "/").dropLast().joined(separator: "/") }
+
+    /// Search only labels that are safe to display, never raw credentials.
+    public func matches(_ search: String) -> Bool {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || [id, driver, summary].contains {
+            $0.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     /// A label safe to show on screen (credentials in the URI are masked).
     public var summary: String {
         guard let uri = options.last(where: { $0.key == "uri" })?.value else {
@@ -197,15 +210,35 @@ public enum Discovery {
     // MARK: Profiles
 
     public static func profiles() -> [ConnectionProfile] {
+        profiles(in: profileSearchDirectories)
+    }
+
+    /// Discover nested favorites; earlier search roots win for the same relative name.
+    public static func profiles(in directories: [URL]) -> [ConnectionProfile] {
         var seen = Set<String>()
         var profiles: [ConnectionProfile] = []
-        for url in tomlFiles(in: profileSearchDirectories) {
-            let name = url.deletingPathExtension().lastPathComponent
-            guard !seen.contains(name), let profile = try? loadProfile(at: url) else { continue }
-            seen.insert(name)
-            profiles.append(profile)
+        for directory in directories {
+            guard let files = FileManager.default.enumerator(
+                at: directory, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in files {
+                guard url.pathExtension == "toml",
+                    (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                    var profile = try? loadProfile(at: url) else { continue }
+                let root = directory.standardizedFileURL.path
+                let path = url.deletingPathExtension().standardizedFileURL.path
+                let name = String(path.dropFirst(root.count + (root.hasSuffix("/") ? 0 : 1)))
+                guard seen.insert(name).inserted else { continue }
+                profile.id = name
+                profiles.append(profile)
+            }
         }
-        return profiles.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        return profiles.sorted {
+            if $0.group != $1.group {
+                return $0.group.localizedCaseInsensitiveCompare($1.group) == .orderedAscending
+            }
+            return $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending
+        }
     }
 
     public static func loadProfile(at url: URL) throws -> ConnectionProfile {
@@ -223,6 +256,9 @@ public enum Discovery {
 
     /// Look a profile up by name, or load it directly if given a path.
     public static func profile(named reference: String) throws -> ConnectionProfile {
+        if let profile = profiles().first(where: { $0.id == reference }) {
+            return profile
+        }
         if reference.contains("/") || reference.hasSuffix(".toml") {
             return try loadProfile(at: URL(fileURLWithPath: expandingTilde(reference)))
         }

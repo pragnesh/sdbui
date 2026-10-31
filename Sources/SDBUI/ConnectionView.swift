@@ -28,23 +28,44 @@ struct DisconnectedView: View {
 
 struct ConnectionPanel: View {
     @Bindable var model: BrowserModel
+    @State private var search = ""
+
+    private var visibleProfiles: [ConnectionProfile] {
+        model.profiles.filter { $0.matches(search) }
+    }
+
+    private func startsGroup(_ profile: ConnectionProfile) -> Bool {
+        let profiles = visibleProfiles
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return false }
+        return index == 0 || profiles[index - 1].group != profile.group
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Profiles").font(.headline)
+                Text("Favorites").font(.headline)
                 Spacer()
                 Button("Reload") { model.reloadDiscovery() }
             }
 
+            TextField("Search favorites", text: $search)
+
             if model.profiles.isEmpty {
-                Text("No profiles in ~/.config/adbc/profiles")
+                Text("No saved profiles found. Add a TOML profile to your ADBC profiles folder.")
                     .foregroundColor(.gray)
+            } else if visibleProfiles.isEmpty {
+                Text("No matching favorites").foregroundColor(.gray)
+                Spacer()
             } else {
                 ScrollView {
-                    List(model.profiles, selection: model.binding(\.selectedProfileID)) { profile in
+                    List(visibleProfiles, selection: model.binding(\.selectedProfileID)) { profile in
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(profile.id)
+                            if startsGroup(profile) {
+                                Text(profile.group.isEmpty ? "Ungrouped" : profile.group)
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            Text(profile.name)
                             Text("\(profile.driver) · \(profile.summary)")
                                 .font(.caption)
                                 .foregroundColor(.gray)
@@ -58,7 +79,7 @@ struct ConnectionPanel: View {
             Button(model.isConnecting ? "Connecting…" : "Connect to profile") {
                 model.connectSelectedProfile()
             }
-            .disabled(model.selectedProfileID == nil || model.isConnecting)
+            .disabled(!visibleProfiles.contains { $0.id == model.selectedProfileID } || model.isConnecting)
 
             Divider()
 

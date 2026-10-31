@@ -62,7 +62,11 @@ MariaDB and PostgreSQL; other databases show the columns ADBC reports.
 
 Also:
 
-- Profile list and URI connect; vendor name/version from `GetInfo`
+- Searchable favorites grouped by profile subfolder, plus URI connect;
+  vendor name/version from `GetInfo`. Nested profiles such as
+  `profiles/Work/Production.toml` appear in the `Work` group; search matches
+  profile names, groups, drivers and password-masked connection summaries.
+  Earlier profile search directories take priority for equal relative names.
 - Arrow types: ints, floats, bool, utf8/large/view, binary, decimal128/256,
   date/time/timestamp (with time zones), duration, interval, list, struct, map,
   union, dictionary
@@ -81,6 +85,7 @@ sudo apt install libgtk-4-dev clang
 # 3. Build, test, run
 swift build
 swift test
+bash scripts/test-cadbc.sh   # statement / result-stream lifetime regression
 swift run sdbui
 ```
 
