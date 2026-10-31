@@ -49,5 +49,6 @@ let package = Package(
             ]
         ),
         .testTarget(name: "ADBCKitTests", dependencies: ["ADBCKit"]),
+        .testTarget(name: "SDBUITests", dependencies: ["SDBUI"]),
     ]
 )

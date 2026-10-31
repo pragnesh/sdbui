@@ -44,6 +44,23 @@ final class BrowserModel {
     var connection: ADBCConnection?
     var connectionTitle = ""
     var isConnecting = false
+    private(set) var isConnectionLost = false
+    @ObservationIgnored private var reconnectSource: ConnectionSource?
+    @ObservationIgnored private var sessionRevision = 0
+    @ObservationIgnored private var connectionMonitor: Task<Void, Never>?
+    @ObservationIgnored private let openConnection: @Sendable (ConnectionSource) throws -> ADBCConnection
+    @ObservationIgnored private let healthCheckIntervalNanoseconds: UInt64
+
+    init(
+        openConnection: @escaping @Sendable (ConnectionSource) throws -> ADBCConnection = { try ADBCConnection.open($0) },
+        healthCheckIntervalNanoseconds: UInt64 = 5_000_000_000
+    ) {
+        self.openConnection = openConnection
+        self.healthCheckIntervalNanoseconds = healthCheckIntervalNanoseconds
+    }
+
+    var canUseConnection: Bool { connection != nil && !isConnectionLost && !isConnecting }
+
 
     // MARK: Schema
 
@@ -252,12 +269,13 @@ final class BrowserModel {
         guard !isConnecting else { return }
         do {
             let source = try connectionDraft.source()
+            let opener = openConnection
             isConnecting = true
             connectionFeedback = "Testing connection…"
             Task {
                 let outcome = await Task.detached {
                     Result { () -> String in
-                        let connection = try ADBCConnection.open(source)
+                        let connection = try opener(source)
                         _ = try connection.execute("SELECT 1", maxRows: 1)
                         return connection.vendorName ?? "database"
                     }
@@ -298,43 +316,102 @@ final class BrowserModel {
         connect(.direct(driver: driver, uri: uri), title: driver ?? "connection")
     }
 
-    private func connect(_ source: ConnectionSource, title: String) {
+    private func connect(_ source: ConnectionSource, title: String, reconnecting: Bool = false) {
         guard !isConnecting else { return }
+        sessionRevision += 1
+        loadsInFlight = 0
+        let revision = sessionRevision
+        connectionMonitor?.cancel()
+        let opener = openConnection
         isConnecting = true
         errorMessage = nil
-        statusMessage = "Connecting to \(title)…"
+        statusMessage = reconnecting ? "Reconnecting to \(title)…" : "Connecting to \(title)…"
 
         Task {
+            guard revision == sessionRevision else { return }
             let outcome = await Task.detached {
-                Result { try ADBCConnection.open(source) }
+                Result { try opener(source) }
             }.value
+            guard revision == sessionRevision else {
+                if case .success(let obsolete) = outcome { obsolete.stopTunnel() }
+                return
+            }
             isConnecting = false
-
             switch outcome {
                 case .success(let connection):
+                    self.connection?.stopTunnel()
                     resetBrowsing()
+                    isBrowsing = false
+                    isRunning = false
                     self.connection = connection
+                    isConnectionLost = false
+                    reconnectSource = source
                     connectionTitle = title
                     let vendor = [connection.vendorName, connection.vendorVersion]
                         .compactMap { $0 }.joined(separator: " ")
-                    statusMessage = vendor.isEmpty ? "Connected" : "Connected to \(vendor)"
-                    if sql.isEmpty {
-                        setSQL("SELECT 1")
-                    }
+                    statusMessage = reconnecting
+                        ? "Reconnected. Run your query when ready."
+                        : (vendor.isEmpty ? "Connected" : "Connected to \(vendor)")
+                    if !reconnecting && sql.isEmpty { setSQL("SELECT 1") }
                     refreshTables()
-                    if runOnConnect {
+                    startConnectionMonitor()
+                    if !reconnecting && runOnConnect {
                         runOnConnect = false
                         selectTab(.query)
                         runQuery()
                     }
                 case .failure(let error):
-                    statusMessage = "Connection failed"
+                    statusMessage = reconnecting ? "Reconnect failed — try again when the server is available." : "Connection failed"
                     errorMessage = "\(error)"
             }
         }
     }
 
+    func reconnect() {
+        guard isConnectionLost, let reconnectSource, !isConnecting else { return }
+        connect(reconnectSource, title: connectionTitle, reconnecting: true)
+    }
+
+    private func startConnectionMonitor() {
+        connectionMonitor?.cancel()
+        let interval = healthCheckIntervalNanoseconds
+        connectionMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: interval) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.checkConnectionHealth()
+            }
+        }
+    }
+
+    private func checkConnectionHealth() async {
+        guard canUseConnection, !isRunning, loadsInFlight == 0, let connection else { return }
+        let revision = sessionRevision
+        let outcome = await Task.detached { Result { try connection.checkHealth() } }.value
+        guard revision == sessionRevision, canUseConnection else { return }
+        if case .failure(let error) = outcome { handleConnectionFailure(error, from: connection) }
+    }
+
+    private func handleConnectionFailure(_ error: Error, from failed: ADBCConnection) {
+        guard connection === failed, !isConnectionLost, !isConnecting,
+              failed.isConnectionLoss(error) else { return }
+        isConnectionLost = true
+        isRunning = false
+        connectionMonitor?.cancel()
+        failed.stopTunnel()
+        statusMessage = "Connection lost — reconnect to continue."
+        errorMessage = "\(error)"
+    }
+
     func disconnect() {
+        sessionRevision += 1
+        loadsInFlight = 0
+        connectionMonitor?.cancel()
+        connectionMonitor = nil
+        reconnectSource = nil
+        isConnectionLost = false
+        isConnecting = false
+        isRunning = false
         connection?.stopTunnel()
         connection = nil
         resetBrowsing()
@@ -374,6 +451,7 @@ final class BrowserModel {
     }
 
     func selectDatabase(_ database: String?) {
+        guard canUseConnection else { return }
         guard database != selectedDatabase else { return }
         selectedDatabase = database
         selectTable(nil)
@@ -411,9 +489,11 @@ final class BrowserModel {
     }
 
     func refreshTables() {
-        guard let connection else { return }
+        guard canUseConnection, let connection else { return }
         Task {
+            guard self.connection === connection, canUseConnection else { return }
             let outcome = await Task.detached { Result { try connection.tables() } }.value
+            guard self.connection === connection, canUseConnection else { return }
             switch outcome {
                 case .success(let tables):
                     self.tables = tables.sorted {
@@ -423,12 +503,14 @@ final class BrowserModel {
                         selectedDatabase = databases.first
                     }
                 case .failure(let error):
-                    errorMessage = "Could not list tables: \(error)"
+                    handleConnectionFailure(error, from: connection)
+                    if !isConnectionLost { errorMessage = "Could not list tables: \(error)" }
             }
         }
     }
 
     func selectTable(_ id: String?) {
+        guard canUseConnection else { return }
         guard id != selectedTableID else { return }
         selectedTableID = id
         loadedTables = [:]
@@ -457,6 +539,7 @@ final class BrowserModel {
 
     /// Reload what the current tab shows.
     func refreshCurrentTab() {
+        guard canUseConnection else { return }
         if selectedTab == .query && !isBrowsing {
             runQuery()
             return
@@ -466,7 +549,7 @@ final class BrowserModel {
     }
 
     private func loadCurrentTab() {
-        guard let table = selectedTable, loadedTables[selectedTab] != table.id else { return }
+        guard canUseConnection, let table = selectedTable, loadedTables[selectedTab] != table.id else { return }
         loadedTables[selectedTab] = table.id
         switch selectedTab {
             case .query: loadContent(table)
@@ -477,20 +560,26 @@ final class BrowserModel {
 
     /// Run `sql` off the main actor, counting it as a load in flight.
     private func fetch(_ sql: String, maxRows: Int = 10_000) async -> Result<QueryResult, any Error> {
-        guard let connection else { return .failure(ADBCError("Not connected")) }
+        guard canUseConnection, let connection else { return .failure(ADBCError("Not connected")) }
+        let revision = sessionRevision
         loadsInFlight += 1
-        defer { loadsInFlight -= 1 }
-        return await Task.detached {
+        defer { if revision == sessionRevision { loadsInFlight -= 1 } }
+        let outcome = await Task.detached {
             Result { try connection.execute(sql, maxRows: maxRows) }
         }.value
+        guard revision == sessionRevision, self.connection === connection else {
+            return .failure(ADBCError("Connection changed"))
+        }
+        if case .failure(let error) = outcome { handleConnectionFailure(error, from: connection) }
+        return outcome
     }
 
     /// Show `outcome` in `pane` if `table` is still selected.
     private func apply(
         _ outcome: Result<QueryResult, any Error>, to pane: ResultPane, for table: TableInfo,
-        what: String
+        what: String, revision: Int
     ) {
-        guard selectedTableID == table.id else { return }
+        guard revision == sessionRevision, canUseConnection, selectedTableID == table.id else { return }
         switch outcome {
             case .success(let result):
                 pane.show(result)
@@ -505,6 +594,8 @@ final class BrowserModel {
     /// Shows one page of `table` in the Query tab: the SQL in the editor and
     /// its rows below.
     private func loadContent(_ table: TableInfo) {
+        guard canUseConnection else { return }
+        let revision = sessionRevision
         let orderBy = contentSort.flatMap { sort in
             contentColumns.indices.contains(sort.column)
                 ? (column: contentColumns[sort.column], ascending: sort.ascending) : nil
@@ -523,7 +614,9 @@ final class BrowserModel {
         errorMessage = nil
         statusMessage = "Loading \(table.name)…"
         Task {
+            guard revision == sessionRevision, canUseConnection else { return }
             let outcome = await fetch(sql)
+            guard revision == sessionRevision, canUseConnection else { return }
             isRunning = false
             guard selectedTableID == table.id, isBrowsing else { return }
             switch outcome {
@@ -553,6 +646,7 @@ final class BrowserModel {
     }
 
     private func sortContent(by sort: DataGridSort) {
+        guard canUseConnection else { return }
         guard let table = selectedTable, sort != contentSort else { return }
         contentSort = sort
         contentOffset = 0
@@ -560,12 +654,14 @@ final class BrowserModel {
     }
 
     func showContentPage(next: Bool) {
+        guard canUseConnection else { return }
         guard let table = selectedTable else { return }
         contentOffset = max(0, contentOffset + (next ? pageSize : -pageSize))
         loadContent(table)
     }
 
     func applyContentFilter() {
+        guard canUseConnection else { return }
         guard let table = selectedTable else { return }
         if let column = filterColumn ?? contentColumns.first, let op = filterOperator {
             contentFilter = SQLDialect.Filter(column: column, op: op, value: filterValue)
@@ -577,6 +673,7 @@ final class BrowserModel {
     }
 
     func clearContentFilter() {
+        guard canUseConnection else { return }
         guard let table = selectedTable, contentFilter != nil else { return }
         contentFilter = nil
         contentOffset = 0
@@ -586,28 +683,33 @@ final class BrowserModel {
     // MARK: Structure tab
 
     private func loadStructure(_ table: TableInfo) {
-        guard let connection else { return }
+        guard canUseConnection, let connection else { return }
+        let revision = sessionRevision
         errorMessage = nil
         Task {
+            guard revision == sessionRevision, canUseConnection else { return }
             if let columnsSQL = dialect.columnsSQL(table) {
-                apply(await fetch(columnsSQL), to: structurePane, for: table, what: "columns")
+                apply(await fetch(columnsSQL), to: structurePane, for: table, what: "columns", revision: revision)
             } else {
                 // Other databases: what ADBC reports (names and Arrow types).
                 let outcome = await Task.detached {
                     Result { try connection.columns(of: table) }
                 }.value
+                guard revision == sessionRevision, canUseConnection else { return }
+                if case .failure(let error) = outcome { handleConnectionFailure(error, from: connection) }
                 apply(
                     outcome.map { columns in
                         QueryResult(
                             columns: [.init(name: "Field", type: ""), .init(name: "Type", type: "")],
                             rows: columns.map { [$0.name, $0.type] })
                     },
-                    to: structurePane, for: table, what: "columns")
+                    to: structurePane, for: table, what: "columns", revision: revision)
             }
+            guard revision == sessionRevision, canUseConnection else { return }
             if let indexesSQL = dialect.indexesSQL(table) {
-                apply(await fetch(indexesSQL), to: indexPane, for: table, what: "indexes")
+                apply(await fetch(indexesSQL), to: indexPane, for: table, what: "indexes", revision: revision)
             }
-            if selectedTableID == table.id {
+            if revision == sessionRevision, canUseConnection, selectedTableID == table.id {
                 statusMessage = "Structure of \(table.name)"
             }
         }
@@ -616,24 +718,28 @@ final class BrowserModel {
     // MARK: Table Info tab
 
     private func loadInfo(_ table: TableInfo) {
+        guard canUseConnection else { return }
+        let revision = sessionRevision
         errorMessage = nil
         Task {
+            guard revision == sessionRevision, canUseConnection else { return }
             if let infoSQL = dialect.tableInfoSQL(table) {
                 let outcome = await fetch(infoSQL).map(Self.transposed)
-                apply(outcome, to: infoPane, for: table, what: "table information")
+                apply(outcome, to: infoPane, for: table, what: "table information", revision: revision)
             } else {
                 infoPane.show(QueryResult(
                     columns: [.init(name: "Property", type: ""), .init(name: "Value", type: "")],
                     rows: [["Name", table.name], ["Type", table.type ?? ""]]))
             }
+            guard revision == sessionRevision, canUseConnection else { return }
             if let createSQL = dialect.createTableSQL(table),
                 case .success(let result) = await fetch(createSQL),
-                selectedTableID == table.id
+                revision == sessionRevision, canUseConnection, selectedTableID == table.id
             {
                 createStatement =
                     result.cell(0, result.columns.count - 1, maxLength: nil) ?? ""
             }
-            if selectedTableID == table.id {
+            if revision == sessionRevision, canUseConnection, selectedTableID == table.id {
                 statusMessage = "Information about \(table.name)"
             }
         }
@@ -652,7 +758,7 @@ final class BrowserModel {
     // MARK: Query tab
 
     var canRun: Bool {
-        connection != nil && !isRunning
+        canUseConnection && !isRunning
     }
 
     func setSQL(_ text: String) {
@@ -690,14 +796,18 @@ final class BrowserModel {
 
         isRunning = true
         errorMessage = nil
+        let revision = sessionRevision
         Task {
+            guard revision == sessionRevision, canUseConnection else { return }
             var shown: QueryResult?
             var elapsed = Duration.zero
             for (index, statement) in statements.enumerated() {
                 statusMessage =
                     statements.count > 1
                     ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
-                switch await fetch(statement, maxRows: maxRows ?? 10_000) {
+                let outcome = await fetch(statement, maxRows: maxRows ?? 10_000)
+                guard revision == sessionRevision, canUseConnection else { return }
+                switch outcome {
                     case .success(let result):
                         elapsed += result.elapsed
                         if !result.columns.isEmpty || shown?.columns.isEmpty != false {
@@ -730,7 +840,11 @@ final class BrowserModel {
             do {
                 try connection.cancel()
             } catch {
-                await MainActor.run { self.errorMessage = "\(error)" }
+                await MainActor.run {
+                    guard self.connection === connection, !self.isConnecting else { return }
+                    self.handleConnectionFailure(error, from: connection)
+                    if !self.isConnectionLost { self.errorMessage = "\(error)" }
+                }
             }
         }
     }

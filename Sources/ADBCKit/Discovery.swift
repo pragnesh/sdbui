@@ -331,4 +331,23 @@ public struct ADBCError: Error, CustomStringConvertible, LocalizedError {
     public init(_ message: String) { self.message = message }
     public var description: String { message }
     public var errorDescription: String? { message }
+
+    /// Transport failures are distinct from SQL, permission, and transaction errors.
+    public var isConnectionLoss: Bool {
+        let text = message.lowercased()
+        if text.hasPrefix("ssh tunnel closed.") { return true }
+        if text.contains("[sqlstate 08") || ["57p01", "57p02", "57p03"].contains(where: {
+            text.contains("[sqlstate \($0)]")
+        }) { return true }
+        // Drivers do not always supply SQLSTATE, especially for stream errors.
+        // Do not interpret quoted server messages in ordinary SQL errors as loss.
+        guard text.contains("[io]") || text.contains("[libpq]") || text.contains("[mysql]") else { return false }
+        if text.contains("[sqlstate ") || ["[invalid_argument]", "[not_found]", "[integrity]", "[unauthorized]"].contains(where: { text.contains($0) }) { return false }
+        return ["server closed the connection unexpectedly", "no connection to the server",
+                "connection is closed", "connection not open", "connection reset by peer",
+                "broken pipe", "server has gone away", "lost connection to mysql",
+                "bad connection", "invalid connection", "ssl connection has been closed unexpectedly",
+                "ssl syscall error: eof detected", "terminating connection due to administrator command"]
+            .contains { text.contains($0) }
+    }
 }

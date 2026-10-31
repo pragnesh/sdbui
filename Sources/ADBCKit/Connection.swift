@@ -114,8 +114,25 @@ public final class ADBCConnection: @unchecked Sendable {
     public func execute(_ sql: String, maxRows: Int) throws -> QueryResult {
         lock.lock()
         defer { lock.unlock() }
-        try tunnel?.check()
+        return try executeLocked(sql, maxRows: maxRows)
+    }
 
+    /// Probe only an idle connection; never queue behind a running query.
+    /// A false return means a query owns the connection, not that it is lost.
+    public func checkHealth() throws -> Bool {
+        guard lock.try() else { return false }
+        defer { lock.unlock() }
+        _ = try executeLocked("SELECT 1", maxRows: 1)
+        return true
+    }
+
+    public func isConnectionLoss(_ error: Error) -> Bool {
+        if let tunnel, !tunnel.isRunning { return true }
+        return (error as? ADBCError)?.isConnectionLoss ?? false
+    }
+
+    private func executeLocked(_ sql: String, maxRows: Int) throws -> QueryResult {
+        try tunnel?.check()
         let clock = ContinuousClock()
         let start = clock.now
         var stream = ArrowArrayStream()

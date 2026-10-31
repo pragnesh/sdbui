@@ -13,6 +13,17 @@ struct MainWindow: View {
             TopBar(model: model)
                 .padding(8)
             Divider()
+            if model.isConnectionLost {
+                HStack(spacing: 8) {
+                    Text(model.isConnecting ? "Reconnecting…" : "Connection lost. Your SQL is preserved.")
+                        .foregroundColor(.red)
+                    Spacer()
+                    Button(model.isConnecting ? "Reconnecting…" : "Reconnect") { model.reconnect() }
+                        .disabled(model.isConnecting)
+                }
+                .padding(8)
+                Divider()
+            }
             // Each pane sits in a GeometryReader, which is exactly the size
             // it's offered, so a pane's content changing size re-lays-out
             // only that pane.
@@ -51,6 +62,7 @@ struct TopBar: View {
                 )
             )
             .fixedSize()
+            .disabled(!model.canUseConnection)
             Spacer()
             HStack(spacing: 2) {
                 ForEach(BrowserTab.allCases, id: \.self) { tab in
@@ -65,6 +77,7 @@ struct TopBar: View {
             }
             Spacer()
             Button("Refresh") { model.refreshCurrentTab() }
+                .disabled(!model.canUseConnection)
                 .fixedSize()
         }
     }
@@ -93,6 +106,7 @@ struct TableSidebar: View {
             GeometryReader { _ in
                 TableBrowser(model: model)
             }
+            .disabled(!model.canUseConnection)
         }
         .padding()
     }
@@ -213,7 +227,7 @@ struct StatusBar: View {
         }
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(model.loadsInFlight > 0 ? "Loading…  \(model.statusMessage)" : model.statusMessage)
+                Text(model.loadsInFlight > 0 && !model.isConnectionLost ? "Loading…  \(model.statusMessage)" : model.statusMessage)
                     .font(.caption)
                 Spacer()
             }

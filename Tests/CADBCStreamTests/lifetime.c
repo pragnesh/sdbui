@@ -35,7 +35,8 @@ static AdbcStatusCode statement_new(struct AdbcConnection* connection,
 }
 static AdbcStatusCode set_sql(struct AdbcStatement* statement, const char* sql,
                               struct AdbcError* error) {
-  (void)statement; (void)sql; (void)error;
+  (void)statement; (void)sql;
+  if (fail_stage == 2) memcpy(error->sqlstate, "42601", 5);
   return fail_stage == 2 ? ADBC_STATUS_INVALID_ARGUMENT : ADBC_STATUS_OK;
 }
 static AdbcStatusCode execute(struct AdbcStatement* statement,
@@ -71,6 +72,7 @@ int main(void) {
     AdbcStatusCode status = cadbc_execute(&session, "SELECT 1", &stream, NULL, &error);
     if (fail_stage) {
       assert(status != ADBC_STATUS_OK && error);
+      if (fail_stage == 2) assert(strstr(error, "[SQLSTATE 42601]"));
       assert(!alive && statement_releases == (fail_stage != 1));
       assert(stream_releases == (fail_stage == 3));
       free(error);

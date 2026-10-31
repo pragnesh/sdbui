@@ -66,8 +66,12 @@ static const char* status_name(AdbcStatusCode code) {
 static void take_error(AdbcStatusCode code, struct AdbcError* error, const char* context,
                        char** error_out) {
   const char* message = error->message ? error->message : "(no message)";
-  set_error(error_out,
-            format_string("%s: [%s] %s", context, status_name(code), message));
+  if (error->sqlstate[0]) {
+    set_error(error_out, format_string("%s: [%s] [SQLSTATE %.5s] %s",
+                                      context, status_name(code), error->sqlstate, message));
+  } else {
+    set_error(error_out, format_string("%s: [%s] %s", context, status_name(code), message));
+  }
   if (error->release) error->release(error);
 }
 

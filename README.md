@@ -69,6 +69,11 @@ Also:
   with owner-only permissions (passwords remain plain text). Editing a favorite
   preserves its extra driver options and URI parameters; saving under a new
   name creates a copy.
+- Lost-connection detection on database/SSH errors and idle health checks
+  (every five seconds, skipped while queries are running). Reconnect reuses the
+  original settings, restarts SSH when needed, and preserves the SQL editor.
+  It opens a new database session: transactions and session settings must be
+  re-established, and SQL is never replayed automatically.
 - Searchable favorites grouped by profile subfolder, plus URI connect;
   vendor name/version from `GetInfo`. Nested profiles such as
   `profiles/Work/Production.toml` appear in the `Work` group; search matches
