@@ -123,4 +123,25 @@ final class SSHTunnelTests: XCTestCase {
             XCTAssertTrue(String(describing: error).contains("SSH tunnel failed"))
         }
     }
+
+    func testStoppingOneChildWhileAnotherRunsDoesNotHang() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("sdbui-child-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: log) }
+        let first = try ChildProcess(executable: "/bin/sleep", arguments: ["30"], stderrPath: log.path)
+        let second = try ChildProcess(executable: "/bin/sleep", arguments: ["30"], stderrPath: log.path)
+        let start = Date()
+        second.terminate(gracePeriod: 1)
+        XCTAssertFalse(second.isRunning)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
+        XCTAssertTrue(first.isRunning)
+        first.terminate(gracePeriod: 1)
+        XCTAssertFalse(first.isRunning)
+
+        // A child that ignores SIGTERM is killed after the grace period.
+        let stubborn = try ChildProcess(executable: "/bin/sh", arguments: ["-c", "trap '' TERM; sleep 30"], stderrPath: log.path)
+        Thread.sleep(forTimeInterval: 0.2)
+        stubborn.terminate(gracePeriod: 0.2)
+        XCTAssertFalse(stubborn.isRunning)
+    }
 }

@@ -412,13 +412,13 @@ final class BrowserModel {
                 Result { try opener(source) }
             }.value
             guard revision == sessionRevision else {
-                if case .success(let obsolete) = outcome { obsolete.stopTunnel() }
+                if case .success(let obsolete) = outcome { Self.release(obsolete) }
                 return
             }
             isConnecting = false
             switch outcome {
                 case .success(let connection):
-                    self.connection?.stopTunnel()
+                    Self.release(self.connection)
                     resetBrowsing()
                     isBrowsing = false
                     isRunning = false
@@ -477,7 +477,7 @@ final class BrowserModel {
         isConnectionLost = true
         isRunning = false
         connectionMonitor?.cancel()
-        failed.stopTunnel()
+        Self.release(failed)
         statusMessage = "Connection lost — reconnect to continue."
         errorMessage = "\(error)"
     }
@@ -491,10 +491,18 @@ final class BrowserModel {
         isConnectionLost = false
         isConnecting = false
         isRunning = false
-        connection?.stopTunnel()
+        Self.release(connection)
         connection = nil
         resetBrowsing()
         statusMessage = "Not connected"
+    }
+
+    /// Stops `connection`'s SSH tunnel off the main thread: waiting for ssh
+    /// (and the driver's close, when this drops the last reference) must not
+    /// freeze the UI.
+    private nonisolated static func release(_ connection: ADBCConnection?) {
+        guard let connection else { return }
+        Task.detached { connection.stopTunnel() }
     }
 
     private func resetBrowsing() {

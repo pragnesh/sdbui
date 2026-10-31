@@ -91,12 +91,12 @@ struct TunnelDestination {
 /// Owns one foreground OpenSSH process. It never invokes a shell or prompts.
 final class SSHTunnel: @unchecked Sendable {
     let localPort: Int
-    private let process: Process
+    private let process: ChildProcess
     private let logURL: URL
     private let lock = NSLock()
     private var stopped = false
 
-    private init(process: Process, port: Int, logURL: URL) {
+    private init(process: ChildProcess, port: Int, logURL: URL) {
         self.process = process
         self.localPort = port
         self.logURL = logURL
@@ -114,26 +114,18 @@ final class SSHTunnel: @unchecked Sendable {
             guard FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
                 throw ADBCError("Could not create SSH diagnostics file.")
             }
-            let handle = try FileHandle(forWritingTo: log)
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = arguments
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = handle
-            do { try process.run() } catch {
-                try? handle.close()
+            let process: ChildProcess
+            do {
+                process = try ChildProcess(executable: executableURL.path, arguments: arguments, stderrPath: log.path)
+            } catch {
                 try? FileManager.default.removeItem(at: log)
                 throw ADBCError("Could not start OpenSSH: \(error)")
             }
-            try? handle.close()
             SSHProcessRegistry.shared.add(process, logURL: log)
             let tunnel = SSHTunnel(process: process, port: port, logURL: log)
             let deadline = Date().addingTimeInterval(15)
             while process.isRunning && Date() < deadline {
                 // OpenSSH reports this only after authentication and forwarding setup.
-                // Avoid a second Process while the long-lived ssh process is active:
-                // some Foundation versions serialize child reaping on Linux.
                 let diagnostics = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
                 if diagnostics.contains("Entering interactive session."),
                    diagnostics.contains("Local forwarding listening on 127.0.0.1 port \(port)"),
@@ -171,13 +163,7 @@ final class SSHTunnel: @unchecked Sendable {
         defer { lock.unlock() }
         guard !stopped else { return }
         stopped = true
-        if process.isRunning {
-            process.terminate()
-            let deadline = Date().addingTimeInterval(1)
-            while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
-            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
-        }
+        process.terminate(gracePeriod: 1)
         SSHProcessRegistry.shared.remove(process)
         try? FileManager.default.removeItem(at: logURL)
         try? FileManager.default.removeItem(atPath: logURL.path + ".sock")
@@ -227,24 +213,108 @@ final class SSHTunnel: @unchecked Sendable {
     }
 }
 
+/// A child process spawned directly and reaped with `waitpid(pid, WNOHANG)`.
+///
+/// Foundation's `Process` is avoided: on Linux it reaps children with one
+/// blocking `waitpid` at a time, so while one tunnel runs, another tunnel's
+/// exit is never observed and `waitUntilExit()` hangs. Closing a second
+/// SSH connection tab froze the app that way.
+final class ChildProcess: @unchecked Sendable {
+    let pid: pid_t
+    private let lock = NSLock()
+    private var exited = false
+
+    /// Starts `executable` with stdin and stdout on /dev/null and stderr
+    /// appended to `stderrPath`. No other descriptors are inherited.
+    init(executable: String, arguments: [String], stderrPath: String) throws {
+        #if os(Linux)
+        var actions = posix_spawn_file_actions_t()
+        var attributes = posix_spawnattr_t()
+        #else
+        var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        #endif
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 2, stderrPath, O_WRONLY | O_APPEND, 0)
+        #if os(Linux)
+        posix_spawn_file_actions_addclosefrom_np(&actions, 3)
+        #endif
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        // Don't pass on signals the app ignores or blocks (e.g. SIGPIPE).
+        var defaults = sigset_t()
+        sigfillset(&defaults)
+        posix_spawnattr_setsigdefault(&attributes, &defaults)
+        var mask = sigset_t()
+        sigemptyset(&mask)
+        posix_spawnattr_setsigmask(&attributes, &mask)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+
+        let argv = ([executable] + arguments).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        var pid = pid_t()
+        let result = posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
+        guard result == 0 else { throw ADBCError(String(cString: strerror(result))) }
+        self.pid = pid
+    }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !reapLocked(blocking: false)
+    }
+
+    /// Sends SIGTERM, then SIGKILL if the process outlives `gracePeriod`
+    /// seconds, and reaps it.
+    func terminate(gracePeriod: TimeInterval) {
+        signal(SIGTERM)
+        let deadline = Date().addingTimeInterval(gracePeriod)
+        while isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !reapLocked(blocking: false) else { return }
+        _ = kill(pid, SIGKILL)
+        while !reapLocked(blocking: true) && errno == EINTR {}
+    }
+
+    func signal(_ signal: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        // Never signal a reaped pid: it may belong to another process by now.
+        if !reapLocked(blocking: false) { _ = kill(pid, signal) }
+    }
+
+    /// Whether the process has exited (and been reaped).
+    private func reapLocked(blocking: Bool) -> Bool {
+        guard !exited else { return true }
+        var status: Int32 = 0
+        let result = waitpid(pid, &status, blocking ? 0 : WNOHANG)
+        if result == pid || (result == -1 && errno == ECHILD) { exited = true }
+        return exited
+    }
+}
+
 /// Normal application exit also stops tunnels if the UI still owns a connection.
 private final class SSHProcessRegistry: @unchecked Sendable {
     static let shared = SSHProcessRegistry()
     private let lock = NSLock()
-    private var processes: [Int32: (process: Process, log: URL)] = [:]
+    private var processes: [Int32: (process: ChildProcess, log: URL)] = [:]
     private init() { atexit { SSHProcessRegistry.shared.stopAll() } }
-    func add(_ process: Process, logURL: URL) {
+    func add(_ process: ChildProcess, logURL: URL) {
         lock.lock(); defer { lock.unlock() }
-        processes[process.processIdentifier] = (process, logURL)
+        processes[process.pid] = (process, logURL)
     }
-    func remove(_ process: Process) {
+    func remove(_ process: ChildProcess) {
         lock.lock(); defer { lock.unlock() }
-        processes[process.processIdentifier] = nil
+        processes[process.pid] = nil
     }
     private func stopAll() {
         lock.lock(); defer { lock.unlock() }
         for entry in processes.values {
-            if entry.process.isRunning { entry.process.terminate() }
+            entry.process.signal(SIGTERM)
             try? FileManager.default.removeItem(at: entry.log)
             try? FileManager.default.removeItem(atPath: entry.log.path + ".sock")
         }
