@@ -25,6 +25,8 @@ let package = Package(
     ],
     dependencies: [swiftCrossUI],
     targets: [
+        .systemLibrary(name: "CSDBUIGtk", pkgConfig: "gtk4", providers: [.apt(["libgtk-4-dev"])]),
+        .target(name: "CResultValue", dependencies: ["CSDBUIGtk"]),
         // Minimal ADBC driver loader (dlopen + AdbcDriverInit) and the
         // vendored ADBC / Arrow C Data Interface headers.
         .target(
@@ -39,6 +41,7 @@ let package = Package(
             dependencies: [
                 "ADBCKit",
                 "CSQLite",
+                .target(name: "CResultValue", condition: .when(platforms: [.linux])),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 // DefaultBackend also drags in the Windows-only WinUIInterop
                 // target, which Swift 6.4's build system compiles on Linux too.

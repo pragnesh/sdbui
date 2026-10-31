@@ -43,6 +43,8 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   Switching reuses each tab's editor and grid. Queries continue in background
   tabs; closing a tab disconnects that session.
   History and snippets are shared across connections.
+- **Favorites:** single-click to edit settings; double-click (or press Enter)
+  to connect to the saved profile in the current connection tab.
 - **Sidebar:** the selected database's tables (via `AdbcConnectionGetObjects`)
   with a filter
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
@@ -58,6 +60,10 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
 
 Results are shown in a virtualized grid (GTK `GtkColumnView`): only the
 visible cells are formatted and drawn, so large results scroll smoothly.
+Hover over a clipped cell for a bounded preview; cells that fit have no tooltip.
+Double-click any cell to open its complete value in a read-only window with Copy.
+JSON opens formatted, with a Raw toggle that preserves the original text and
+number precision. NULL is distinguished from an empty string.
 Numbers are right-aligned and headers show each column's type. Click a header
 to sort; select rows with Shift/Ctrl-click and press Ctrl+C, or right-click a
 cell to copy it, the rows, CSV or SQL `INSERT` statements.
@@ -116,6 +122,7 @@ sudo apt install libgtk-4-dev libsqlite3-dev clang
 swift build
 swift test
 bash scripts/test-cadbc.sh   # statement / result-stream lifetime regression
+bash scripts/test-result-values.sh  # native value UI regression (GTK display required)
 swift run sdbui
 ```
 

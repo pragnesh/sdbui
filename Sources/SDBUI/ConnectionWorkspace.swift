@@ -1,5 +1,8 @@
 import Foundation
 import SwiftCrossUI
+#if canImport(GtkBackend)
+import GtkBackend
+#endif
 
 #if canImport(Observation)
     import Observation
@@ -90,7 +93,17 @@ struct ConnectionWorkspaceView: View {
                                 }
                                 .buttonStyle(tab.id == workspace.selectedID ? .bordered : .borderless)
                                 .fixedSize()
-                                Button("×") { workspace.close(tab.id) }
+                                Button(action: { workspace.close(tab.id) }) {
+                                    #if canImport(GtkBackend)
+                                        Text("×").inspect { label in
+                                            // Ellipsizing gives this one-character label
+                                            // a minimum wider than its natural width.
+                                            label.ellipsize = .none
+                                        }
+                                    #else
+                                        Text("×")
+                                    #endif
+                                }
                                     .buttonStyle(.borderless)
                                     .fixedSize()
                             }

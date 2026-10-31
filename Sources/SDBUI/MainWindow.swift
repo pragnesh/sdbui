@@ -267,7 +267,7 @@ struct PaneGrid: View {
         }
     }
 
-    private func grid() -> DataGrid {
+    private func grid() -> some View {
         let pane = pane
         let onSort: (@MainActor (DataGridSort) -> Void)?
         if pane.isSortable {
@@ -275,7 +275,7 @@ struct PaneGrid: View {
         } else {
             onSort = nil
         }
-        return DataGrid(
+        let grid = DataGrid(
             columns: pane.columns,
             rowCount: pane.result?.rowCount ?? 0,
             contentRevision: pane.revision,
@@ -285,6 +285,11 @@ struct PaneGrid: View {
             onCopy: { request in pane.copyText(for: request) },
             cell: { row, column in pane.cell(row: row, column: column) }
         )
+        #if canImport(GtkBackend)
+            return grid.inspectingValues(in: pane)
+        #else
+            return grid
+        #endif
     }
 }
 

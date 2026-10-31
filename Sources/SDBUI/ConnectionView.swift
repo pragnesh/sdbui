@@ -1,6 +1,11 @@
 import ADBCKit
 import Foundation
 import SwiftCrossUI
+#if canImport(GtkBackend)
+import GtkBackend
+import Gtk
+import CGtk
+#endif
 
 /// Favorites stay in the sidebar; their editable settings occupy the detail pane.
 struct DisconnectedView: View {
@@ -71,6 +76,7 @@ struct ConnectionPanel: View {
                                 .font(.caption).foregroundColor(.gray).lineLimit(1)
                         }
                     }
+                    .connectingOnProfileActivation(visibleProfiles, model: model)
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -231,5 +237,26 @@ struct SSHTunnelForm: View {
             Text("Uses OpenSSH keys or your SSH agent. Trust the server in your terminal first; password and key-passphrase prompts are not shown here.")
                 .font(.caption).foregroundColor(.gray)
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func connectingOnProfileActivation(_ profiles: [ConnectionProfile], model: BrowserModel) -> some View {
+        #if canImport(GtkBackend)
+            inspect([.onCreate, .afterUpdate]) { widget in
+                guard let list = widget as? Gtk.ListBox else { return }
+                // GTK's row activation also supports Enter on the selected row.
+                // Refresh the mapping after filtering, rather than indexing all favorites.
+                list.activateOnSingleClick = false
+                list.rowActivated = { _, row in
+                    let index = Int(gtk_list_box_row_get_index(row))
+                    guard profiles.indices.contains(index) else { return }
+                    model.activateFavorite(profiles[index].id)
+                }
+            }
+        #else
+            self
+        #endif
     }
 }

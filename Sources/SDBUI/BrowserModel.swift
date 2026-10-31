@@ -309,6 +309,13 @@ final class BrowserModel {
         connectionFeedback = ""
     }
 
+    /// Open the saved profile activated in the sidebar, not unsaved form edits.
+    func activateFavorite(_ id: String) {
+        guard !isConnecting, connection == nil, profiles.contains(where: { $0.id == id }) else { return }
+        selectFavorite(id)
+        connectSelectedProfile()
+    }
+
     func newFavorite() {
         selectedProfileID = nil
         connectionDraft = ConnectionDraft()
