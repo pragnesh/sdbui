@@ -14,7 +14,7 @@ enum BrowserTab: String, CaseIterable, Hashable {
     case info = "Table Info"
 }
 
-/// All state for the query browser window.
+/// All state for one connection tab.
 ///
 /// ADBC calls block, so they run on detached tasks; results are applied back
 /// on the main actor.
@@ -135,6 +135,8 @@ final class BrowserModel {
     @ObservationIgnored private(set) var libraryRevision = 0 { didSet { stateChanged() } }
     @ObservationIgnored private(set) var libraryFeedback = "" { didSet { stateChanged() } }
 
+    func refreshQueryLibrary() { libraryRevision += 1 }
+
     func toggleLibrary(_ section: QueryLibrarySection) {
         librarySection = librarySection == section ? nil : section
     }
@@ -244,6 +246,13 @@ final class BrowserModel {
     ) {
         let last = subscribers[key]?.last ?? snapshot()
         subscribers[key] = Subscriber(snapshot: snapshot, last: last, update: update)
+    }
+
+    /// Mounted views subscribe again when this session becomes visible. Drop
+    /// callbacks to removed widgets without stopping background database work.
+    func detachViews() {
+        subscribers.removeAll()
+        tableFilterTask?.cancel()
     }
 
     private func stateChanged() {

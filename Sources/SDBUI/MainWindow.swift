@@ -120,12 +120,13 @@ struct TableBrowser: View {
     /// find others.
     static let tableLimit = 100
 
-    /// The applied filter. It's view-local `@State` rather than a model
-    /// property so a change re-renders only this view.
-    @State private var filter = ""
+    /// Redraw only this view after typing pauses. The text stays in the
+    /// session model so returning to a connection restores its filter.
+    @State private var filterRevision = 0
 
     var body: some View {
-        let tables = model.visibleTables(matching: filter)
+        let _ = filterRevision
+        let tables = model.visibleTables(matching: model.tableFilterDraft)
         let shown = Array(tables.prefix(Self.tableLimit))
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -161,7 +162,7 @@ struct TableBrowser: View {
                 "Filter tables",
                 text: Binding(
                     get: { model.tableFilterDraft },
-                    set: { text in model.editTableFilter(text) { filter = $0 } }
+                    set: { text in model.editTableFilter(text) { _ in filterRevision &+= 1 } }
                 )
             )
         }

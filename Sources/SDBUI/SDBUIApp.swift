@@ -8,7 +8,7 @@ import SwiftCrossUI
 
 @main
 struct SDBUIApp: App {
-    @State var model = BrowserModel()
+    @State var workspace = ConnectionWorkspace()
 
     #if canImport(GtkBackend)
         /// GTK hands a second launch with the same ID to the running instance;
@@ -22,11 +22,8 @@ struct SDBUIApp: App {
 
     var body: some Scene {
         WindowGroup("SDB Query Browser") {
-            RootView(model: model)
-                .onAppear {
-                    model.reloadDiscovery()
-                    model.applyLaunchEnvironment()
-                }
+            ConnectionWorkspaceView(workspace: workspace)
+                .onAppear { workspace.launch() }
         }
         .defaultSize(width: 1200, height: 800)
     }
