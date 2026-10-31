@@ -3,8 +3,7 @@
 import Foundation
 import PackageDescription
 
-// SDBUI_SCUI_PATH=/path/to/swift-cross-ui builds against a local checkout
-// (for working on SwiftCrossUI itself).
+// Use the GitHub fork by default; SDBUI_SCUI_PATH is an explicit local override.
 let swiftCrossUI: Package.Dependency =
     if let path = ProcessInfo.processInfo.environment["SDBUI_SCUI_PATH"] {
         .package(path: path)

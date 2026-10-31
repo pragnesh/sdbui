@@ -62,6 +62,13 @@ MariaDB and PostgreSQL; other databases show the columns ADBC reports.
 
 Also:
 
+- Connection form with name, driver, host, port, user, password, database and
+  SSL mode for PostgreSQL/MySQL; URI mode supports other drivers and advanced
+  profiles. Test opens a separate connection and runs `SELECT 1`; Connect uses
+  the current settings without requiring a save. Save writes TOML favorites
+  with owner-only permissions (passwords remain plain text). Editing a favorite
+  preserves its extra driver options and URI parameters; saving under a new
+  name creates a copy.
 - Searchable favorites grouped by profile subfolder, plus URI connect;
   vendor name/version from `GetInfo`. Nested profiles such as
   `profiles/Work/Production.toml` appear in the `Work` group; search matches
@@ -89,13 +96,14 @@ bash scripts/test-cadbc.sh   # statement / result-stream lifetime regression
 swift run sdbui
 ```
 
-SwiftCrossUI comes from a fork,
-[pragnesh/swift-cross-ui](https://github.com/pragnesh/swift-cross-ui/tree/sdbui-text-measure-cache)
-(upstream 0.10.0 plus GtkBackend performance patches: memoized text
-measurement and single-mutation CSS updates, ~3.5× faster table selection).
+SwiftCrossUI is hosted at
+[pragnesh/swift-cross-ui](https://github.com/pragnesh/swift-cross-ui).
+Builds use its `sdbui-data-grid` branch by default, including the virtualized
+grid and GTK performance fixes.
 
-To build against a local SwiftCrossUI checkout (e.g. while patching it):
-`SDBUI_SCUI_PATH=/path/to/swift-cross-ui swift build`.
+To explicitly build against a local checkout while developing the fork, set
+`SDBUI_SCUI_PATH=/path/to/swift-cross-ui` for `swift build`, `swift test`, or
+`swift run sdbui`.
 
 ## Release packages (Linux)
 
@@ -122,8 +130,26 @@ Target machines need GTK 4 (`libgtk-4-1`) and ADBC drivers installed with
 dbc. The first release build compiles all dependencies with optimisation
 and takes around 10 minutes; later ones are incremental.
 
-Profiles that go through SSH tunnels need the tunnels running first
-(e.g. `~/.config/adbc/profiles/tunnels.sh`).
+For SSH connections, open the **SSH Tunnel** tab, enable **Connect through SSH**,
+and enter the SSH host (or config alias), port, username and optional identity
+file. The database host and port on the Connection tab are resolved from the
+SSH server. Test creates a temporary tunnel; Connect keeps its tunnel until
+Disconnect or normal application exit. Failed connections also release tunnels.
+The app chooses a loopback-only local port automatically and saves SSH settings
+in `[SDBUI.SSH]`, separate from ADBC driver options.
+
+OpenSSH must be installed. Authentication uses your SSH agent, default keys or
+the selected identity file; unlock encrypted keys in your agent first. Connect
+to the SSH host once in a terminal to verify its host key before using the app.
+SSH password/passphrase dialogs are not supported. PostgreSQL and MySQL network
+URIs are supported; PostgreSQL retains the original hostname for SSL verification.
+MySQL sees the loopback endpoint, so SSL hostname verification may need a
+certificate valid for that endpoint; the app does not weaken the selected SSL mode.
+Other clients reading the shared TOML profiles must manage their own SSH tunnel.
+
+To run isolated OpenSSH/PostgreSQL integration checks (Python `paramiko` and
+PostgreSQL server tools required): `python3 scripts/test-ssh-integration.py`.
+This uses temporary keys, known-host files and a temporary database.
 
 ## Limitations
 

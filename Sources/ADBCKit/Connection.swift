@@ -3,6 +3,7 @@ import Foundation
 
 /// How to open a connection — the same two modes databow offers.
 public enum ConnectionSource: Sendable, Hashable {
+    case ssh(driver: String, options: [ConnectionProfile.Option], settings: SSHSettings)
     /// A saved profile, by name or path.
     case profile(String)
     /// An explicit driver (name, manifest or library path) plus options.
@@ -33,21 +34,36 @@ public struct TableInfo: Sendable, Hashable, Identifiable {
 public final class ADBCConnection: @unchecked Sendable {
     private let session: OpaquePointer
     private let lock = NSLock()
+    private let tunnel: SSHTunnel?
 
     public let source: ConnectionSource
     public private(set) var vendorName: String?
     public private(set) var vendorVersion: String?
 
-    public static func open(_ source: ConnectionSource) throws -> ADBCConnection {
+    public static func open(_ source: ConnectionSource,
+                            sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")) throws -> ADBCConnection {
         let driver: String
         var options: [ConnectionProfile.Option]
+        var tunnel: SSHTunnel?
         switch source {
             case .profile(let reference):
                 let profile = try Discovery.profile(named: reference)
+                if profile.ssh.enabled {
+                    return try open(ConnectionDraft(profile: profile).source(), sshExecutableURL: sshExecutableURL)
+                }
                 driver = profile.driver
                 options = try profile.options.map {
                     .init(key: $0.key, value: try Discovery.substitutingEnvironment(in: $0.value))
                 }
+            case .ssh(let name, let original, let settings):
+                driver = name
+                options = original
+                let destination = try TunnelDestination(
+                    uri: options.last(where: { $0.key == "uri" })?.value ?? "", driver: driver)
+                let started = try SSHTunnel.start(settings: settings, destination: destination, executableURL: sshExecutableURL)
+                tunnel = started
+                options.removeAll { $0.key == "uri" }
+                options.insert(.init(key: "uri", value: destination.forwardedURI(localPort: started.localPort)), at: 0)
             case .direct(let explicitDriver, let uri, let extra):
                 guard let name = explicitDriver ?? Discovery.driverName(forURI: uri) else {
                     throw ADBCError("Could not infer a driver from '\(uri)'; choose one explicitly")
@@ -73,19 +89,24 @@ public final class ADBCConnection: @unchecked Sendable {
             }
         }
 
-        let connection = ADBCConnection(session: session, source: source)
+        let connection = ADBCConnection(session: session, source: source, tunnel: tunnel)
         connection.loadVendorInfo()
         return connection
     }
 
-    private init(session: OpaquePointer, source: ConnectionSource) {
+    private init(session: OpaquePointer, source: ConnectionSource, tunnel: SSHTunnel?) {
         self.session = session
         self.source = source
+        self.tunnel = tunnel
     }
 
     deinit {
         cadbc_close(session)
+        tunnel?.stop()
     }
+
+    /// Stop forwarding immediately when the user explicitly disconnects.
+    public func stopTunnel() { tunnel?.stop() }
 
     // MARK: Queries
 
@@ -93,6 +114,7 @@ public final class ADBCConnection: @unchecked Sendable {
     public func execute(_ sql: String, maxRows: Int) throws -> QueryResult {
         lock.lock()
         defer { lock.unlock() }
+        try tunnel?.check()
 
         let clock = ContinuousClock()
         let start = clock.now
@@ -153,6 +175,7 @@ public final class ADBCConnection: @unchecked Sendable {
     public func tables() throws -> [TableInfo] {
         lock.lock()
         defer { lock.unlock() }
+        try tunnel?.check()
 
         var stream = ArrowArrayStream()
         var error: UnsafeMutablePointer<CChar>?
@@ -187,6 +210,7 @@ public final class ADBCConnection: @unchecked Sendable {
     public func columns(of table: TableInfo) throws -> [ResultColumn] {
         lock.lock()
         defer { lock.unlock() }
+        try tunnel?.check()
 
         var schema = ArrowSchema()
         var error: UnsafeMutablePointer<CChar>?

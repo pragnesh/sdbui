@@ -33,6 +33,15 @@ public struct ConnectionProfile: Sendable, Identifiable, Hashable {
     /// Database options in file order (`{{ env_var(...) }}` not yet expanded).
     public var options: [Option]
     public var url: URL
+    public var ssh: SSHSettings = .init()
+
+    public init(id: String, driver: String, options: [Option], url: URL, ssh: SSHSettings = .init()) {
+        self.id = id
+        self.driver = driver
+        self.options = options
+        self.url = url
+        self.ssh = ssh
+    }
 
     public struct Option: Sendable, Hashable {
         public var key: String
@@ -70,7 +79,7 @@ public struct ConnectionProfile: Sendable, Identifiable, Hashable {
 }
 
 public enum Discovery {
-    static let environment = ProcessInfo.processInfo.environment
+    static var environment: [String: String] { ProcessInfo.processInfo.environment }
 
     /// The manifest key for the current platform, e.g. `linux_amd64`.
     public static var platformTuple: String {
@@ -246,11 +255,17 @@ public enum Discovery {
         guard let driver = toml["driver"]?.stringValue else {
             throw ADBCError("Profile \(url.path) does not name a driver")
         }
+        var ssh = SSHSettings()
+        ssh.enabled = toml["SDBUI", "SSH", "enabled"]?.stringValue == "true"
+        ssh.host = toml["SDBUI", "SSH", "host"]?.stringValue ?? ""
+        ssh.port = toml["SDBUI", "SSH", "port"]?.stringValue ?? "22"
+        ssh.user = toml["SDBUI", "SSH", "user"]?.stringValue ?? ""
+        ssh.identityFile = toml["SDBUI", "SSH", "identity_file"]?.stringValue ?? ""
         return ConnectionProfile(
             id: url.deletingPathExtension().lastPathComponent,
             driver: driver,
             options: toml.entries(in: "Options").map { .init(key: $0.key, value: $0.value.stringValue) },
-            url: url
+            url: url, ssh: ssh
         )
     }
 

@@ -36,6 +36,8 @@ final class BrowserModel {
     var selectedProfileID: String?
     var directDriver: DriverManifest?
     var directURI = ""
+    var connectionDraft = ConnectionDraft()
+    var connectionFeedback = ""
 
     // MARK: Connection state
 
@@ -200,7 +202,7 @@ final class BrowserModel {
             runOnConnect = true
         }
         if let profile = environment["SDBUI_PROFILE"] {
-            selectedProfileID = profile
+            selectFavorite(profile)
             connectSelectedProfile()
         }
     }
@@ -208,6 +210,78 @@ final class BrowserModel {
     @ObservationIgnored private var runOnConnect = false
 
     // MARK: Connecting
+
+    func selectFavorite(_ id: String?) {
+        guard id != selectedProfileID else { return }
+        selectedProfileID = id
+        if let profile = profiles.first(where: { $0.id == id }) {
+            connectionDraft = ConnectionDraft(profile: profile)
+        }
+        connectionFeedback = ""
+    }
+
+    func newFavorite() {
+        selectedProfileID = nil
+        connectionDraft = ConnectionDraft()
+        connectionFeedback = ""
+    }
+
+    func saveFavorite() {
+        guard !isConnecting else { return }
+        guard !connectionDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            connectionFeedback = "Enter a favorite name above, then choose Save."
+            return
+        }
+        do {
+            if profiles.contains(where: { $0.id == connectionDraft.name && $0.url != connectionDraft.originalURL }) {
+                throw ADBCError("A favorite with this name already exists. Choose another name.")
+            }
+            let url = try connectionDraft.save()
+            reloadDiscovery()
+            selectedProfileID = profiles.first(where: { $0.url == url })?.id
+            if let profile = profiles.first(where: { $0.id == selectedProfileID }) {
+                connectionDraft = ConnectionDraft(profile: profile)
+            }
+            connectionFeedback = "Favorite saved."
+        } catch {
+            connectionFeedback = "Save failed: \(error)"
+        }
+    }
+
+    func testFavorite() {
+        guard !isConnecting else { return }
+        do {
+            let source = try connectionDraft.source()
+            isConnecting = true
+            connectionFeedback = "Testing connection…"
+            Task {
+                let outcome = await Task.detached {
+                    Result { () -> String in
+                        let connection = try ADBCConnection.open(source)
+                        _ = try connection.execute("SELECT 1", maxRows: 1)
+                        return connection.vendorName ?? "database"
+                    }
+                }.value
+                isConnecting = false
+                switch outcome {
+                case .success(let vendor): connectionFeedback = "Connection successful (\(vendor))."
+                case .failure(let error): connectionFeedback = "Connection test failed: \(error)"
+                }
+            }
+        } catch {
+            connectionFeedback = "Connection test failed: \(error)"
+        }
+    }
+
+    func connectFavorite() {
+        do {
+            let source = try connectionDraft.source()
+            connectionFeedback = ""
+            connect(source, title: connectionDraft.name.isEmpty ? connectionDraft.driver : connectionDraft.name)
+        } catch {
+            connectionFeedback = "Connection failed: \(error)"
+        }
+    }
 
     func connectSelectedProfile() {
         guard let selectedProfileID else { return }
@@ -261,6 +335,7 @@ final class BrowserModel {
     }
 
     func disconnect() {
+        connection?.stopTunnel()
         connection = nil
         resetBrowsing()
         statusMessage = "Not connected"

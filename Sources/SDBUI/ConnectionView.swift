@@ -1,23 +1,22 @@
 import ADBCKit
+import Foundation
 import SwiftCrossUI
 
-/// The window while disconnected: saved profiles and URI connect on the left.
+/// Favorites stay in the sidebar; their editable settings occupy the detail pane.
 struct DisconnectedView: View {
     var model: BrowserModel
 
     var body: some View {
         NavigationSplitView {
             GeometryReader { _ in
-                ConnectionPanel(model: model)
-                    .padding()
+                ConnectionPanel(model: model).padding()
             }
             .frame(minWidth: 280)
         } detail: {
-            VStack(alignment: .leading) {
-                Spacer()
-                Text("Choose a profile or enter a URI to connect.")
-                    .foregroundColor(.gray)
-                Spacer()
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView {
+                    ConnectionForm(model: model).padding()
+                }
                 StatusBar(model: model)
             }
             .padding()
@@ -47,57 +46,190 @@ struct ConnectionPanel: View {
                 Spacer()
                 Button("Reload") { model.reloadDiscovery() }
             }
-
+            Button("New connection") { model.newFavorite() }
             TextField("Search favorites", text: $search)
-
             if model.profiles.isEmpty {
-                Text("No saved profiles found. Add a TOML profile to your ADBC profiles folder.")
+                Text("No favorites yet. Enter connection settings and choose Save.")
                     .foregroundColor(.gray)
+                Spacer()
             } else if visibleProfiles.isEmpty {
                 Text("No matching favorites").foregroundColor(.gray)
                 Spacer()
             } else {
                 ScrollView {
-                    List(visibleProfiles, selection: model.binding(\.selectedProfileID)) { profile in
+                    List(visibleProfiles, selection: Binding(
+                        get: { model.selectedProfileID },
+                        set: { model.selectFavorite($0) }
+                    )) { profile in
                         VStack(alignment: .leading, spacing: 0) {
                             if startsGroup(profile) {
                                 Text(profile.group.isEmpty ? "Ungrouped" : profile.group)
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
+                                    .font(.caption).foregroundColor(.gray)
                             }
                             Text(profile.name)
                             Text("\(profile.driver) · \(profile.summary)")
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                                .lineLimit(1)
+                                .font(.caption).foregroundColor(.gray).lineLimit(1)
                         }
                     }
                 }
                 .frame(maxHeight: .infinity)
             }
+        }
+        .disabled(model.isConnecting)
+    }
+}
 
-            Button(model.isConnecting ? "Connecting…" : "Connect to profile") {
-                model.connectSelectedProfile()
+struct ConnectionForm: View {
+    @Bindable var model: BrowserModel
+    @State private var showSSH = false
+
+    private func field(_ keyPath: WritableKeyPath<ConnectionDraft, String>) -> Binding<String> {
+        Binding(get: { model.connectionDraft[keyPath: keyPath] }, set: { value in
+            if model.connectionDraft[keyPath: keyPath] != value {
+                model.connectionDraft[keyPath: keyPath] = value
+                model.connectionFeedback = ""
             }
-            .disabled(!visibleProfiles.contains { $0.id == model.selectedProfileID } || model.isConnecting)
+        })
+    }
 
-            Divider()
+    private var driverNames: [String] {
+        Array(Set(model.drivers.map(\.id) + ["postgresql", "mysql", "sqlite", "duckdb", model.connectionDraft.driver])).sorted()
+    }
 
-            Text("Connect with a URI").font(.headline)
-            if model.drivers.isEmpty {
-                Text("No ADBC drivers found. Install one with `dbc install postgresql`.")
-                    .foregroundColor(.gray)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(model.selectedProfileID == nil ? "New connection" : "Connection settings").font(.title2)
+            Text("Name (required to save; use Group/Name to organize favorites)")
+            TextField("Work/Production", text: field(\.name))
+            HStack(spacing: 8) {
+                Button("Connection") { showSSH = false }
+                Button(model.connectionDraft.ssh.enabled ? "SSH Tunnel (enabled)" : "SSH Tunnel") { showSSH = true }
+            }
+            if showSSH {
+                SSHTunnelForm(model: model)
             } else {
-                HStack {
-                    Text("Driver")
-                    Picker(of: model.drivers, selection: model.binding(\.directDriver))
+                Text("Driver")
+                Picker(of: driverNames, selection: Binding(
+                    get: { Optional(model.connectionDraft.driver) },
+                    set: { value in
+                        guard let value, value != model.connectionDraft.driver else { return }
+                        model.connectionDraft.selectDriver(value)
+                        model.connectionFeedback = ""
+                    }
+                ))
+                if !model.drivers.contains(where: { $0.id == model.connectionDraft.driver }) {
+                    Text("Driver not discovered. Install it with dbc, then choose Reload.")
+                        .font(.caption).foregroundColor(.gray)
+                }
+                if model.connectionDraft.supportsFields {
+                    Toggle("Use connection URI", isOn: Binding(
+                        get: { model.connectionDraft.useURI },
+                        set: { value in
+                            guard value != model.connectionDraft.useURI else { return }
+                            if value {
+                                do { model.connectionDraft.uri = try model.connectionDraft.connectionURI() }
+                                catch { model.connectionFeedback = "\(error)"; return }
+                            } else {
+                                // Reparse edited URI fields while retaining driver-specific options.
+                                do {
+                                    let temporary = ConnectionProfile(
+                                        id: model.connectionDraft.name, driver: model.connectionDraft.driver,
+                                        options: try model.connectionDraft.connectionOptions(),
+                                        url: model.connectionDraft.originalURL ?? URL(fileURLWithPath: "/"))
+                                    let parsed = ConnectionDraft(profile: temporary)
+                                    guard !parsed.useURI else {
+                                        model.connectionFeedback = "This URI needs URI mode (for example, templates or socket options)."
+                                        return
+                                    }
+                                    model.connectionDraft.applyURIFields(from: parsed)
+                                } catch { model.connectionFeedback = "\(error)"; return }
+                            }
+                            model.connectionDraft.useURI = value
+                            model.connectionFeedback = ""
+                        }
+                    ))
+                }
+                if model.connectionDraft.useURI || !model.connectionDraft.supportsFields {
+                    Text("Connection URI")
+                    SecureField("Enter connection URI", text: field(\.uri))
+                    Text("URI credentials are hidden. Environment placeholders in saved profiles are supported.")
+                        .font(.caption).foregroundColor(.gray)
+                } else {
+                    Text("Host")
+                    TextField("localhost", text: field(\.host))
+                    Text("Port")
+                    TextField(model.connectionDraft.defaultPort, text: field(\.port))
+                    Text("User")
+                    TextField("Username", text: field(\.user))
+                    Text("Password")
+                    SecureField("Password", text: field(\.password))
+                    Text("Database")
+                    TextField("Database", text: field(\.database))
+                    Text("SSL mode")
+                    Picker(of: model.connectionDraft.sslModes, selection: Binding(
+                        get: { Optional(model.connectionDraft.sslMode) },
+                        set: { value in
+                            if let value, value != model.connectionDraft.sslMode {
+                                model.connectionDraft.sslMode = value
+                                model.connectionFeedback = ""
+                            }
+                        }
+                    ))
                 }
             }
-            TextField("postgresql://user:pass@host:5432/db", text: model.binding(\.directURI))
-            Button("Connect") {
-                model.connectDirect()
+            Text("Saved favorites store passwords in plain text in your ADBC profiles folder.")
+                .font(.caption).foregroundColor(.gray)
+            HStack(spacing: 8) {
+                Button("Test") { model.testFavorite() }
+                Button("Save") { model.saveFavorite() }
+                Spacer()
+                Button(model.isConnecting ? "Connecting…" : "Connect") { model.connectFavorite() }
             }
-            .disabled(model.directURI.isEmpty || model.isConnecting)
+            if !model.connectionFeedback.isEmpty { Text(model.connectionFeedback) }
+        }
+        .disabled(model.isConnecting)
+        .frame(maxWidth: 640)
+    }
+}
+
+
+struct SSHTunnelForm: View {
+    @Bindable var model: BrowserModel
+
+    private func field(_ keyPath: WritableKeyPath<SSHSettings, String>) -> Binding<String> {
+        Binding(get: { model.connectionDraft.ssh[keyPath: keyPath] }, set: { value in
+            guard value != model.connectionDraft.ssh[keyPath: keyPath] else { return }
+            model.connectionDraft.ssh[keyPath: keyPath] = value
+            model.connectionFeedback = ""
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("SSH tunnel").font(.headline)
+            Toggle("Connect through SSH", isOn: Binding(
+                get: { model.connectionDraft.ssh.enabled },
+                set: { value in
+                    guard value != model.connectionDraft.ssh.enabled else { return }
+                    model.connectionDraft.ssh.enabled = value
+                    model.connectionFeedback = ""
+                }
+            ))
+            VStack(alignment: .leading, spacing: 12) {
+                Text("SSH host or config alias")
+                TextField("bastion.example.com", text: field(\.host))
+                Text("SSH port")
+                TextField("22", text: field(\.port))
+                Text("SSH username (optional; defaults to SSH configuration)")
+                TextField("Username", text: field(\.user))
+                Text("Identity file (optional; uses SSH agent and default keys if empty)")
+                TextField("~/.ssh/id_ed25519", text: field(\.identityFile))
+            }
+            .disabled(!model.connectionDraft.ssh.enabled || model.isConnecting)
+            Text("Set the database host and port on the Connection tab as seen from the SSH server. The local forwarding port is chosen automatically.")
+                .font(.caption).foregroundColor(.gray)
+            Text("Uses OpenSSH keys or your SSH agent. Trust the server in your terminal first; password and key-passphrase prompts are not shown here.")
+                .font(.caption).foregroundColor(.gray)
         }
     }
 }
