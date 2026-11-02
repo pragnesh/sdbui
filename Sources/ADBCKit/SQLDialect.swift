@@ -52,6 +52,31 @@ public enum SQLDialect: Sendable, Equatable {
             .map(quote).joined(separator: ".")
     }
 
+    // MARK: Default namespace
+
+    /// The session's current database (MySQL) or schema (PostgreSQL).
+    public var currentNamespaceSQL: String? {
+        switch self {
+            case .mysql: return "SELECT DATABASE()"
+            case .postgres: return "SELECT current_schema()"
+            case .generic: return nil
+        }
+    }
+
+    /// Makes `namespace` the session's default for unqualified table names.
+    /// PostgreSQL keeps `public` on the search path for shared functions.
+    public func useNamespaceSQL(_ namespace: String) -> String? {
+        switch self {
+            case .mysql:
+                return "USE \(quote(namespace))"
+            case .postgres:
+                return namespace == "public"
+                    ? "SET search_path TO public" : "SET search_path TO \(quote(namespace)), public"
+            case .generic:
+                return nil
+        }
+    }
+
     // MARK: Browsing
 
     /// A filter on one column, as in Sequel Ace's content filter bar.

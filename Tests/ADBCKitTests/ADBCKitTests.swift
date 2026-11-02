@@ -161,6 +161,15 @@ final class SQLDialectTests: XCTestCase {
         XCTAssertEqual(SQLDialect.mysql.qualifiedName(of: table), "`shop`.`order items`")
     }
 
+    func testDefaultNamespaceSQL() {
+        XCTAssertEqual(SQLDialect.mysql.useNamespaceSQL("my`db"), "USE `my``db`")
+        XCTAssertEqual(SQLDialect.postgres.useNamespaceSQL("sales"), "SET search_path TO \"sales\", public")
+        XCTAssertEqual(SQLDialect.postgres.useNamespaceSQL("public"), "SET search_path TO public")
+        XCTAssertNil(SQLDialect.generic.useNamespaceSQL("main"))
+        XCTAssertEqual(SQLDialect.mysql.currentNamespaceSQL, "SELECT DATABASE()")
+        XCTAssertNil(SQLDialect.generic.currentNamespaceSQL)
+    }
+
     func testBrowseSQL() {
         XCTAssertEqual(
             SQLDialect.mysql.browseSQL(table, filter: nil, limit: 101, offset: 0),

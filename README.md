@@ -46,7 +46,9 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   to connect to the saved profile in the current connection tab.
 - **Sidebar:** a list of databases (MySQL) or schemas (PostgreSQL), and
   below it the selected database's tables (via `AdbcConnectionGetObjects`)
-  with a filter
+  with a filter. The selected database is the session's default (`USE`, or
+  `search_path` on PostgreSQL), so unqualified table names resolve in it;
+  it starts at the connection's default and is kept across reconnects
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
 - **Table Info:** engine, row estimate, sizes, collation, … and the
   `CREATE TABLE` statement (MySQL)

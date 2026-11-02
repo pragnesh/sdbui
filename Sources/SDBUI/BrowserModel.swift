@@ -68,8 +68,14 @@ final class BrowserModel {
     // MARK: Schema
 
     var tables: [TableInfo] = []
-    /// The database (MySQL) or schema (PostgreSQL) shown in the sidebar.
+    /// The database (MySQL) or schema (PostgreSQL) shown in the sidebar. It's
+    /// also the session's default, so unqualified table names resolve in it.
     private(set) var selectedDatabase: String?
+    /// The session's default database, as far as we know (`nil` until
+    /// queried after connecting).
+    @ObservationIgnored private var sessionDatabase: String?
+    /// The database to select again once a reconnected session lists tables.
+    @ObservationIgnored private var preferredDatabase: String?
     /// What's typed in the table filter field; see ``TableBrowser``.
     @ObservationIgnored var tableFilterDraft = ""
     @ObservationIgnored private var tableFilterTask: Task<Void, Never>?
@@ -428,6 +434,8 @@ final class BrowserModel {
             switch outcome {
                 case .success(let connection):
                     Self.release(self.connection)
+                    preferredDatabase = reconnecting ? selectedDatabase : nil
+                    sessionDatabase = nil
                     resetBrowsing()
                     isBrowsing = false
                     isRunning = false
@@ -513,6 +521,8 @@ final class BrowserModel {
         isRunning = false
         Self.release(connection)
         connection = nil
+        sessionDatabase = nil
+        preferredDatabase = nil
         resetBrowsing()
         statusMessage = "Not connected"
     }
@@ -562,6 +572,23 @@ final class BrowserModel {
         guard database != selectedDatabase else { return }
         selectedDatabase = database
         selectTable(nil)
+        applySelectedDatabase()
+    }
+
+    /// Makes the selected database the session's default (`USE`).
+    private func applySelectedDatabase() {
+        guard canUseConnection, let database = selectedDatabase, database != sessionDatabase,
+              let sql = dialect.useNamespaceSQL(database) else { return }
+        sessionDatabase = database
+        let revision = sessionRevision
+        Task {
+            let outcome = await fetch(sql, maxRows: 1)
+            guard revision == sessionRevision, case .failure(let error) = outcome else { return }
+            sessionDatabase = nil
+            if !isConnectionLost && selectedDatabase == database {
+                errorMessage = "Could not make \(database) the default \(dialect.namespaceLabel.lowercased()): \(error)"
+            }
+        }
     }
 
     /// Tables of the selected database whose name contains `filter`.
@@ -599,16 +626,32 @@ final class BrowserModel {
         guard canUseConnection, let connection else { return }
         Task {
             guard self.connection === connection, canUseConnection else { return }
-            let outcome = await Task.detached { Result { try connection.tables() } }.value
+            // After connecting, also ask which database the session starts in.
+            let currentSQL = sessionDatabase == nil ? dialect.currentNamespaceSQL : nil
+            let outcome = await Task.detached {
+                Result { () -> ([TableInfo], String?) in
+                    let tables = try connection.tables()
+                    let current = try currentSQL.flatMap {
+                        try connection.execute($0, maxRows: 1).cell(0, 0, maxLength: nil)
+                    }
+                    return (tables, current)
+                }
+            }.value
             guard self.connection === connection, canUseConnection else { return }
             switch outcome {
-                case .success(let tables):
+                case .success(let (tables, current)):
                     self.tables = tables.sorted {
                         $0.namespace == $1.namespace ? $0.name < $1.name : $0.namespace < $1.namespace
                     }
-                    if selectedDatabase.map({ !databases.contains($0) }) ?? true {
-                        selectedDatabase = databases.first
+                    if let current { sessionDatabase = current }
+                    if let preferred = preferredDatabase, databases.contains(preferred) {
+                        selectedDatabase = preferred
+                    } else if selectedDatabase.map({ !databases.contains($0) }) ?? true {
+                        selectedDatabase = sessionDatabase.flatMap { databases.contains($0) ? $0 : nil }
+                            ?? databases.first
                     }
+                    preferredDatabase = nil
+                    applySelectedDatabase()
                 case .failure(let error):
                     handleConnectionFailure(error, from: connection)
                     if !isConnectionLost { errorMessage = "Could not list tables: \(error)" }
