@@ -46,7 +46,11 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   to connect to the saved profile in the current connection tab.
 - **Sidebar:** a list of databases (MySQL) or schemas (PostgreSQL), and
   below it the selected database's tables (via `AdbcConnectionGetObjects`)
-  with a filter. The selected database is the session's default (`USE`, or
+  with a virtualized, fuzzy-filtered list of all table names. For example,
+  `usrord` matches `user_orders`; exact/prefix/substring matches rank first.
+  Matching ignores case and accents, and multiple search terms must all match.
+  Only visible rows are rendered, keeping large schemas responsive.
+  The selected database is the session's default (`USE`, or
   `search_path` on PostgreSQL), so unqualified table names resolve in it;
   it starts at the connection's default and is kept across reconnects
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
@@ -233,7 +237,6 @@ This uses temporary keys, known-host files and a temporary database.
 - One statement per Run (drivers generally reject multi-statement strings).
 - The Query tab keeps at most "Max rows" rows. The grid shows up to 1000
   characters per cell; copy and CSV export use full values.
-- The sidebar lists at most 100 tables per database; use the filter to find others.
 - Results are read-only (no cell editing).
 
 ## Performance notes

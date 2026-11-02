@@ -20,4 +20,8 @@ void sdbui_shortcut_target(void *widget, const char *name);
 typedef void (*SDBUILayoutChange)(void *context, int width, int height, int final);
 void sdbui_session_window(void *root, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy);
 void sdbui_session_sidebar(void *paned, int width, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy);
+typedef void (*SDBUITableSelect)(void *context, uint32_t index);
+void sdbui_table_list_install(void *root, void *context, SDBUITableSelect select, SDBUIValueDestroy destroy);
+void *sdbui_table_list_context(void *root);
+void sdbui_table_list_update(void *root, const char *const *labels, int replace, uint32_t selected, int width, int height);
 #endif

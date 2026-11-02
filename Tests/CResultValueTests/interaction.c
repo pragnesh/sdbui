@@ -192,10 +192,61 @@ static void test_session_layout(void) {
     g_assert_cmpint(sidebar_state.destroyed, ==, 1);
 }
 
+typedef struct { guint selected, calls, destroyed; } TableListTest;
+static void selected_table(void *context, uint32_t index) {
+    TableListTest *test = context;
+    test->selected = index; test->calls++;
+}
+static void destroy_table_test(void *context) { ((TableListTest *)context)->destroyed++; }
+static guint count_widgets(GtkWidget *widget, GType type) {
+    guint count = G_TYPE_CHECK_INSTANCE_TYPE(widget, type) ? 1 : 0;
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) count += count_widgets(child, type);
+    return count;
+}
+static void test_virtual_table_list(void) {
+    TableListTest test = {0};
+    GtkWidget *window = gtk_window_new(), *root = gtk_fixed_new();
+    gtk_window_set_default_size(GTK_WINDOW(window), 320, 300);
+    gtk_window_set_child(GTK_WINDOW(window), root);
+    sdbui_table_list_install(root, &test, selected_table, destroy_table_test);
+    g_assert_true(sdbui_table_list_context(root) == &test);
+    char **names = g_new0(char *, 10001);
+    for (guint index = 0; index < 10000; index++) names[index] = g_strdup_printf("table_%05u", index);
+    sdbui_table_list_update(root, (const char *const *)names, 1, 9999, 320, 300);
+    g_strfreev(names);
+    gtk_window_present(GTK_WINDOW(window));
+    settle_layout();
+    GtkWidget *view = find(root, GTK_TYPE_LIST_VIEW);
+    g_assert_nonnull(view);
+    GtkSingleSelection *selection = GTK_SINGLE_SELECTION(gtk_list_view_get_model(GTK_LIST_VIEW(view)));
+    g_assert_cmpuint(g_list_model_get_n_items(G_LIST_MODEL(selection)), ==, 10000);
+    g_assert_cmpuint(gtk_single_selection_get_selected(selection), ==, 9999);
+    g_assert_cmpuint(test.calls, ==, 0);
+    guint labels = count_widgets(root, GTK_TYPE_LABEL);
+    g_assert_cmpuint(labels, >, 0);
+    g_assert_cmpuint(labels, <, 1000); /* Actual widgets must stay bounded. */
+    gtk_single_selection_set_selected(selection, 123);
+    g_assert_cmpuint(test.calls, ==, 1);
+    g_assert_cmpuint(test.selected, ==, 123);
+    const char *filtered[] = {"users", "orders", NULL};
+    sdbui_table_list_update(root, filtered, 1, GTK_INVALID_LIST_POSITION, 320, 300);
+    g_assert_cmpuint(g_list_model_get_n_items(G_LIST_MODEL(selection)), ==, 2);
+    g_assert_cmpuint(gtk_single_selection_get_selected(selection), ==, GTK_INVALID_LIST_POSITION);
+    g_assert_cmpuint(test.calls, ==, 1); /* Filtering must never pick a different table. */
+    sdbui_table_list_update(root, NULL, 0, 1, 320, 300);
+    g_assert_cmpuint(test.calls, ==, 1);
+    gtk_single_selection_set_selected(selection, 0);
+    g_assert_cmpuint(test.calls, ==, 2);
+    g_assert_cmpuint(test.selected, ==, 0);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_assert_cmpuint(test.destroyed, ==, 1);
+}
+
 int main(void) {
     gtk_init();
     test_shortcuts();
     test_session_layout();
+    test_virtual_table_list();
     GtkWidget *editor = gtk_text_view_new();
     g_object_ref_sink(editor);
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor));
@@ -237,6 +288,6 @@ int main(void) {
     g_main_loop_run(loop);
     gtk_window_destroy(GTK_WINDOW(window));
     g_main_loop_unref(loop);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection\n");
     return 0;
 }

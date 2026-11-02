@@ -151,13 +151,9 @@ struct DatabaseList: View {
     }
 }
 
-/// Table count, the (capped) table list and its filter.
+/// Table count, virtualized names and fuzzy filter.
 struct TableBrowser: View {
     var model: BrowserModel
-
-    /// Every row costs layout time whenever this list is laid out. Filter to
-    /// find others.
-    static let tableLimit = 100
 
     /// Redraw only this view after typing pauses. The text stays in the
     /// session model so returning to a connection restores its filter.
@@ -166,7 +162,7 @@ struct TableBrowser: View {
     var body: some View {
         let _ = filterRevision
         let tables = model.visibleTables(matching: model.tableFilterDraft)
-        let shown = Array(tables.prefix(Self.tableLimit))
+        let _ = model.watch("table-sidebar-selection", of: { model.selectedTableID }) { filterRevision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 // One label: GTK's ellipsizing labels warn when their text is
@@ -179,24 +175,18 @@ struct TableBrowser: View {
                     .buttonStyle(.borderless)
                     .fixedSize()
             }
+            #if canImport(GtkBackend)
+            VirtualTableList(rows: tables.map { TableSidebarRow(id: $0.id, label: model.label(for: $0)) },
+                selection: model.selectedTableID, model: model)
+                .frame(maxHeight: .infinity)
+            #else
             ScrollView {
-                List(
-                    shown,
-                    selection: Binding(
-                        get: { model.selectedTableID },
-                        set: { model.selectTable($0) }
-                    )
-                ) { table in
-                    Text(model.label(for: table))
-                        .lineLimit(1)
+                List(tables, selection: Binding(get: { model.selectedTableID }, set: { model.selectTable($0) })) { table in
+                    Text(model.label(for: table)).lineLimit(1)
                 }
             }
             .frame(maxHeight: .infinity)
-            if tables.count > shown.count {
-                Text("Showing \(shown.count) of \(tables.count); type to filter.")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-            }
+            #endif
             TextField(
                 "Filter tables",
                 text: Binding(

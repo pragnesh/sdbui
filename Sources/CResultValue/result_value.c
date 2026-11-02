@@ -471,3 +471,85 @@ void sdbui_session_sidebar(void *paned, int width, void *context, SDBUILayoutCha
     g_signal_connect(paned, "notify::position", G_CALLBACK(sidebar_position), layout);
     g_signal_connect(paned, "map", G_CALLBACK(sidebar_map), layout);
 }
+
+typedef struct {
+    GtkStringList *names;
+    GtkSingleSelection *selection;
+    GtkWidget *list, *scroll;
+    void *context;
+    SDBUITableSelect select;
+    SDBUIValueDestroy destroy;
+    gboolean updating;
+} TableList;
+static void table_row_setup(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer data) {
+    (void)factory; (void)data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_single_line_mode(GTK_LABEL(label), TRUE);
+    gtk_widget_set_margin_start(label, 8); gtk_widget_set_margin_end(label, 8);
+    gtk_widget_set_margin_top(label, 4); gtk_widget_set_margin_bottom(label, 4);
+    gtk_list_item_set_child(item, label);
+}
+static void table_row_bind(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer data) {
+    (void)factory; (void)data;
+    const char *name = gtk_string_object_get_string(GTK_STRING_OBJECT(gtk_list_item_get_item(item)));
+    GtkWidget *label = gtk_list_item_get_child(item);
+    gtk_label_set_text(GTK_LABEL(label), name);
+    gtk_widget_set_tooltip_text(label, name);
+}
+static void table_selection_changed(GObject *selection, GParamSpec *property, gpointer data) {
+    (void)property;
+    TableList *list = data;
+    guint index = gtk_single_selection_get_selected(GTK_SINGLE_SELECTION(selection));
+    if (!list->updating && index != GTK_INVALID_LIST_POSITION && list->select) list->select(list->context, index);
+}
+static void table_list_free(gpointer data) {
+    TableList *list = data;
+    g_signal_handlers_disconnect_by_data(list->selection, list);
+    g_object_unref(list->selection); g_object_unref(list->names);
+    if (list->destroy) list->destroy(list->context);
+    g_free(list);
+}
+void sdbui_table_list_install(void *root, void *context, SDBUITableSelect select, SDBUIValueDestroy destroy) {
+    if (!GTK_IS_FIXED(root) || g_object_get_data(G_OBJECT(root), "sdbui-table-list")) { if (destroy) destroy(context); return; }
+    TableList *list = g_new0(TableList, 1);
+    list->context = context; list->select = select; list->destroy = destroy;
+    list->names = gtk_string_list_new(NULL);
+    list->selection = gtk_single_selection_new(G_LIST_MODEL(g_object_ref(list->names)));
+    gtk_single_selection_set_autoselect(list->selection, FALSE);
+    GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+    g_signal_connect(factory, "setup", G_CALLBACK(table_row_setup), NULL);
+    g_signal_connect(factory, "bind", G_CALLBACK(table_row_bind), NULL);
+    list->list = gtk_list_view_new(GTK_SELECTION_MODEL(g_object_ref(list->selection)), factory);
+    gtk_widget_add_css_class(list->list, "navigation-sidebar");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(list->list), GTK_ACCESSIBLE_PROPERTY_LABEL, "Tables", -1);
+    list->scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(list->scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(list->scroll), list->list);
+    gtk_fixed_put(GTK_FIXED(root), list->scroll, 0, 0);
+    g_signal_connect(list->selection, "notify::selected", G_CALLBACK(table_selection_changed), list);
+    g_object_set_data_full(G_OBJECT(root), "sdbui-table-list", list, table_list_free);
+}
+void *sdbui_table_list_context(void *root) {
+    TableList *list = g_object_get_data(G_OBJECT(root), "sdbui-table-list");
+    return list ? list->context : NULL;
+}
+void sdbui_table_list_update(void *root, const char *const *labels, int replace, uint32_t selected, int width, int height) {
+    TableList *list = g_object_get_data(G_OBJECT(root), "sdbui-table-list");
+    if (!list) return;
+    guint old = gtk_single_selection_get_selected(list->selection);
+    list->updating = TRUE;
+    if (replace) gtk_string_list_splice(list->names, 0, g_list_model_get_n_items(G_LIST_MODEL(list->names)), labels);
+    if (selected >= g_list_model_get_n_items(G_LIST_MODEL(list->names))) selected = GTK_INVALID_LIST_POSITION;
+    gtk_single_selection_set_selected(list->selection, selected);
+    list->updating = FALSE;
+    gtk_widget_set_size_request(list->scroll, MAX(width, 0), MAX(height, 0));
+    if (selected != GTK_INVALID_LIST_POSITION && (replace || selected != old)) {
+#if GTK_CHECK_VERSION(4, 12, 0)
+        gtk_list_view_scroll_to(GTK_LIST_VIEW(list->list), selected, GTK_LIST_SCROLL_NONE, NULL);
+#else
+        gtk_widget_activate_action(list->list, "list.scroll-to-item", "u", selected);
+#endif
+    }
+}

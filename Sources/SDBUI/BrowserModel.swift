@@ -681,13 +681,9 @@ final class BrowserModel {
         }
     }
 
-    /// Tables of the selected database whose name contains `filter`.
+    /// All matching names, with exact/prefix/substring matches ahead of fuzzy matches.
     func visibleTables(matching filter: String) -> [TableInfo] {
-        let filter = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        return tables.filter { table in
-            table.namespace == (selectedDatabase ?? "")
-                && (filter.isEmpty || table.name.lowercased().contains(filter))
-        }
+        TableSearch.results(tables, namespace: selectedDatabase ?? "", query: filter)
     }
 
     /// Record a filter keystroke and call `apply` once typing pauses.
