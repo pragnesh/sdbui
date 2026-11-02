@@ -117,6 +117,27 @@ public final class ADBCConnection: @unchecked Sendable {
         return try executeLocked(sql, maxRows: maxRows)
     }
 
+    /// Executes one approved read query in a database-enforced read-only transaction.
+    /// The lock covers BEGIN, the query and ROLLBACK so other loads cannot interleave.
+    public func executeReadOnly(_ sql: String, maxRows: Int) throws -> QueryResult {
+        lock.lock()
+        defer { lock.unlock() }
+        let dialect = SQLDialect(vendorName: vendorName)
+        guard dialect != .generic else { throw ADBCError("Read-only execution is supported for PostgreSQL and MySQL only.") }
+        guard SQLSafetyAssessment(sql, dialect: dialect).allowsReadOnly else {
+            throw ADBCError("Read-only favorite: only read queries are allowed.")
+        }
+        _ = try executeLocked(dialect == .postgres ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY", maxRows: 0)
+        do {
+            let result = try executeLocked(sql, maxRows: maxRows)
+            _ = try executeLocked("ROLLBACK", maxRows: 0)
+            return result
+        } catch {
+            _ = try? executeLocked("ROLLBACK", maxRows: 0)
+            throw error
+        }
+    }
+
     /// Probe only an idle connection; never queue behind a running query.
     /// A false return means a query owns the connection, not that it is lost.
     public func checkHealth() throws -> Bool {

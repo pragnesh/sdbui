@@ -171,6 +171,19 @@ Target machines need GTK 4 (`libgtk-4-1`), SQLite (`libsqlite3-0`) and ADBC driv
 dbc. The first release build compiles all dependencies with optimisation
 and takes around 10 minutes; later ones are incremental.
 
+Favorite settings include an environment **label**, **color**, and **Read-only connection** switch. The label/color and read-only badge appear in the second toolbar; connection tabs show only the connection name. Settings are saved separately from driver options:
+
+```toml
+[SDBUI]
+label = "Production"
+color = "Red" # None, Red, Orange, Yellow, Green, Blue, Purple
+read_only = true
+```
+
+Read-only favorites allow conservative read queries and execute each in a database-enforced read-only transaction on PostgreSQL and MySQL. Unsupported drivers block manual SQL in this mode. Transaction commands, writes, data-changing CTEs, and `SELECT INTO` are blocked before any statement in a batch runs. Use a database account with restricted permissions for access control; these safeguards do not prevent every side effect of database functions or external services. Changing a favorite's settings takes effect when opening a new connection.
+
+Run All, Ctrl+Enter (selection/current statement), and launch-time SQL require confirmation for `DELETE`/`UPDATE` without a `WHERE` in the same scope, and for `DROP`/`TRUNCATE`. A review panel shows the submitted batch before **any** of it executes. Cancel leaves it unexecuted; editing SQL or changing the connection/schema invalidates approval. Confirmation applies to one run only. Detection ignores quoted strings, identifiers and ordinary comments, handles CTEs and nested queries, and conservatively flags executable MySQL comments. It is a lexical safeguard, so unusual SQL can produce extra warnings.
+
 For SSH connections, open the **SSH Tunnel** tab, enable **Connect through SSH**,
 and enter the SSH host (or config alias), port, username and optional identity
 file. The database host and port on the Connection tab are resolved from the

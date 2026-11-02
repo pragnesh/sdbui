@@ -22,6 +22,7 @@ struct QueryTab: View {
                         .frame(width: 400, height: 360)
                 }
             }
+            QuerySafetyConfirmation(model: model)
             QueryStatusLine(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)

@@ -43,6 +43,17 @@ final class BrowserModel {
 
     var connection: ADBCConnection?
     var connectionTitle = ""
+    private(set) var connectionSafety = FavoriteSafety()
+    @ObservationIgnored private(set) var pendingQuery: PendingQuery? { didSet { stateChanged() } }
+
+    struct PendingQuery {
+        let statements: [SQLStatement]
+        let sourceSQL: String
+        let baseOffset: Int
+        let revision: Int
+        let warnings: [String]
+        var sql: String { statements.map(\.text).joined(separator: ";\n") }
+    }
     var isConnecting = false
     private(set) var isConnectionLost = false
     @ObservationIgnored private var reconnectSource: ConnectionSource?
@@ -392,7 +403,7 @@ final class BrowserModel {
         do {
             let source = try connectionDraft.source()
             connectionFeedback = ""
-            connect(source, title: connectionDraft.name.isEmpty ? connectionDraft.driver : connectionDraft.name)
+            connect(source, title: connectionDraft.name.isEmpty ? connectionDraft.driver : connectionDraft.name, safety: connectionDraft.safety)
         } catch {
             connectionFeedback = "Connection failed: \(error)"
         }
@@ -401,7 +412,7 @@ final class BrowserModel {
     func connectSelectedProfile() {
         guard let selectedProfileID else { return }
         guard let profile = profiles.first(where: { $0.id == selectedProfileID }) else { return }
-        connect(.profile(profile.url.path), title: profile.id)
+        connect(.profile(profile.url.path), title: profile.id, safety: profile.safety)
     }
 
     func connectDirect() {
@@ -413,8 +424,9 @@ final class BrowserModel {
         connect(.direct(driver: driver, uri: uri), title: driver ?? "connection")
     }
 
-    private func connect(_ source: ConnectionSource, title: String, reconnecting: Bool = false) {
+    private func connect(_ source: ConnectionSource, title: String, safety: FavoriteSafety = .init(), reconnecting: Bool = false) {
         guard !isConnecting else { return }
+        pendingQuery = nil
         sessionRevision += 1
         loadsInFlight = 0
         let revision = sessionRevision
@@ -446,6 +458,7 @@ final class BrowserModel {
                     isConnectionLost = false
                     reconnectSource = source
                     connectionTitle = title
+                    connectionSafety = safety
                     let vendor = [connection.vendorName, connection.vendorVersion]
                         .compactMap { $0 }.joined(separator: " ")
                     statusMessage = reconnecting
@@ -477,7 +490,7 @@ final class BrowserModel {
 
     func reconnect() {
         guard isConnectionLost, let reconnectSource, !isConnecting else { return }
-        connect(reconnectSource, title: connectionTitle, reconnecting: true)
+        connect(reconnectSource, title: connectionTitle, safety: connectionSafety, reconnecting: true)
     }
 
     private func startConnectionMonitor() {
@@ -506,6 +519,7 @@ final class BrowserModel {
         isConnectionLost = true
         if isRunning { queryStatus = QueryStatus(text: "Connection lost", error: "\(error)") }
         isRunning = false
+        pendingQuery = nil
         connectionMonitor?.cancel()
         Self.release(failed)
         statusMessage = "Connection lost — reconnect to continue."
@@ -515,6 +529,7 @@ final class BrowserModel {
     func disconnect() {
         saveDraft()
         draftKey = nil
+        pendingQuery = nil
         sessionRevision += 1
         loadsInFlight = 0
         connectionMonitor?.cancel()
@@ -525,6 +540,7 @@ final class BrowserModel {
         isRunning = false
         Self.release(connection)
         connection = nil
+        connectionSafety = FavoriteSafety()
         sessionDatabase = nil
         preferredDatabase = nil
         resetBrowsing()
@@ -585,6 +601,7 @@ final class BrowserModel {
     private func applySelectedDatabase() {
         guard canUseConnection, let database = selectedDatabase, database != sessionDatabase,
               let sql = dialect.useNamespaceSQL(database) else { return }
+        if pendingQuery != nil { cancelPendingQuery() }
         sessionDatabase = database
         let revision = sessionRevision
         Task {
@@ -728,13 +745,13 @@ final class BrowserModel {
     }
 
     /// Run `sql` off the main actor, counting it as a load in flight.
-    private func fetch(_ sql: String, maxRows: Int = 10_000) async -> Result<QueryResult, any Error> {
+    private func fetch(_ sql: String, maxRows: Int = 10_000, readOnly: Bool = false) async -> Result<QueryResult, any Error> {
         guard canUseConnection, let connection else { return .failure(ADBCError("Not connected")) }
         let revision = sessionRevision
         loadsInFlight += 1
         defer { if revision == sessionRevision { loadsInFlight -= 1 } }
         let outcome = await Task.detached {
-            Result { try connection.execute(sql, maxRows: maxRows) }
+            Result { try readOnly ? connection.executeReadOnly(sql, maxRows: maxRows) : connection.execute(sql, maxRows: maxRows) }
         }.value
         guard revision == sessionRevision, self.connection === connection else {
             return .failure(ADBCError("Connection changed"))
@@ -794,7 +811,7 @@ final class BrowserModel {
         statusMessage = "Loading \(table.name)…"
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
-            let outcome = await fetch(sql)
+            let outcome = await fetch(sql, readOnly: connectionSafety.readOnly)
             guard revision == sessionRevision, canUseConnection else { return }
             isRunning = false
             guard selectedTableID == table.id, isBrowsing else { return }
@@ -985,15 +1002,35 @@ final class BrowserModel {
 
     /// Runs statements one after another, stopping at the first error, and
     /// shows the last result that has columns.
-    private func run(_ statements: [SQLStatement], sourceSQL: String, baseOffset: Int = 0) {
+    private func run(_ statements: [SQLStatement], sourceSQL: String, baseOffset: Int = 0, confirmed: Bool = false) {
         guard connection != nil, canRun else { return }
         guard !statements.isEmpty else {
             statusMessage = "Nothing to run"
             queryStatus = QueryStatus(text: "Nothing to run")
             queryErrorLocation = nil
+            pendingQuery = nil
             return
         }
         queryErrorLocation = nil
+        errorMessage = nil
+        let assessments = statements.map { SQLSafetyAssessment($0.text, dialect: dialect) }
+        if connectionSafety.readOnly && (dialect == .generic || assessments.contains { !$0.allowsReadOnly }) {
+            pendingQuery = nil
+            let message = dialect == .generic
+                ? "Read-only execution is supported for PostgreSQL and MySQL only."
+                : "Read-only favorite: this batch contains a statement that is not allowed. Nothing was executed."
+            queryStatus = QueryStatus(text: "Blocked by read-only mode", error: message)
+            errorMessage = message
+            return
+        }
+        let warnings = Array(Set(assessments.flatMap(\.warnings))).sorted()
+        if !confirmed && !warnings.isEmpty {
+            pendingQuery = PendingQuery(statements: statements, sourceSQL: sourceSQL, baseOffset: baseOffset,
+                revision: sessionRevision, warnings: warnings)
+            queryStatus = QueryStatus(text: "Awaiting confirmation · nothing executed")
+            return
+        }
+        pendingQuery = nil
         queryStatus = QueryStatus(text: "Running…")
         let runMaxRows = maxRows ?? 10_000
         // Running SQL by hand leaves table browsing (filter bar, pager,
@@ -1004,6 +1041,7 @@ final class BrowserModel {
         errorMessage = nil
         let revision = sessionRevision
         let historyConnection = connectionTitle
+        let readOnly = connectionSafety.readOnly
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
             let clock = ContinuousClock()
@@ -1017,7 +1055,7 @@ final class BrowserModel {
                 // Record only statements we attempt, including failures, never table loads or health probes.
                 queryStatus = QueryStatus(text: statements.count > 1 ? "Running statement \(index + 1) of \(statements.count)…" : "Running…")
                 recordHistory(statement.text, connectionTitle: historyConnection)
-                let outcome = await fetch(statement.text, maxRows: runMaxRows)
+                let outcome = await fetch(statement.text, maxRows: runMaxRows, readOnly: readOnly)
                 guard revision == sessionRevision, canUseConnection else { return }
                 switch outcome {
                     case .success(let result):
@@ -1049,6 +1087,21 @@ final class BrowserModel {
                 statusMessage = completed.text
             }
         }
+    }
+
+    func cancelPendingQuery() {
+        pendingQuery = nil
+        queryStatus = QueryStatus(text: "Execution cancelled · nothing executed")
+    }
+
+    func confirmPendingQuery() {
+        guard let request = pendingQuery else { return }
+        pendingQuery = nil
+        guard request.revision == sessionRevision, request.sourceSQL == sql else {
+            queryStatus = QueryStatus(text: "SQL or connection changed. Run again to review the current query.")
+            return
+        }
+        run(request.statements, sourceSQL: request.sourceSQL, baseOffset: request.baseOffset, confirmed: true)
     }
 
     func cancelQuery() {

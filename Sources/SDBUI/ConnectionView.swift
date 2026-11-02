@@ -71,7 +71,10 @@ struct ConnectionPanel: View {
                                 Text(profile.group.isEmpty ? "Ungrouped" : profile.group)
                                     .font(.caption).foregroundColor(.gray)
                             }
-                            Text(profile.name)
+                            HStack {
+                                Text(profile.name)
+                                FavoriteSafetyBadge(safety: profile.safety)
+                            }
                             Text("\(profile.driver) · \(profile.summary)")
                                 .font(.caption).foregroundColor(.gray).lineLimit(1)
                         }
@@ -107,6 +110,19 @@ struct ConnectionForm: View {
             Text(model.selectedProfileID == nil ? "New connection" : "Connection settings").font(.title2)
             Text("Name (required to save; use Group/Name to organize favorites)")
             TextField("Work/Production", text: field(\.name))
+            Text("Environment label")
+            TextField("Production, Staging, Development…", text: Binding(
+                get: { model.connectionDraft.safety.label },
+                set: { model.connectionDraft.safety.label = $0 }))
+            Text("Environment color")
+            Picker(of: FavoriteSafety.colors, selection: Binding(
+                get: { Optional(model.connectionDraft.safety.color) },
+                set: { if let value = $0 { model.connectionDraft.safety.color = value } }))
+            Toggle("Read-only connection", isOn: Binding(
+                get: { model.connectionDraft.safety.readOnly },
+                set: { model.connectionDraft.safety.readOnly = $0 }))
+            Text("Read-only queries run in database-enforced read-only transactions on PostgreSQL and MySQL. Other drivers are blocked in this mode.")
+                .font(.caption).foregroundColor(.gray)
             HStack(spacing: 8) {
                 Button("Connection") { showSSH = false }
                 Button(model.connectionDraft.ssh.enabled ? "SSH Tunnel (enabled)" : "SSH Tunnel") { showSSH = true }

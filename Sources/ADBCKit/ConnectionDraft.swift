@@ -18,6 +18,7 @@ public struct ConnectionDraft: Equatable, Sendable {
     public var useURI = false
     public var uri = ""
     public var ssh = SSHSettings()
+    public var safety = FavoriteSafety()
     private var options: [ConnectionProfile.Option] = []
     private var queryItems: [URLQueryItem] = []
     public private(set) var originalURL: URL?
@@ -41,6 +42,7 @@ public struct ConnectionDraft: Equatable, Sendable {
         originalURL = profile.url
         driver = profile.driver
         ssh = profile.ssh
+        safety = profile.safety
         options = profile.options
         uri = options.last(where: { $0.key == "uri" })?.value ?? ""
         useURI = true
@@ -158,6 +160,7 @@ public struct ConnectionDraft: Equatable, Sendable {
         let temporary = parent.appendingPathComponent(".sdbui-\(UUID().uuidString).tmp")
         let text = "profile_version = 1\ndriver = \(Self.quoted(driver))\n\n[Options]\n"
             + values.map { "\(Self.quoted($0.key)) = \(Self.quoted($0.value))\n" }.joined()
+            + "\n[SDBUI]\nlabel = \(Self.quoted(safety.label))\ncolor = \(Self.quoted(safety.color))\nread_only = \(safety.readOnly)\n"
             + "\n[SDBUI.SSH]\nenabled = \(ssh.enabled)\n"
             + "host = \(Self.quoted(ssh.host))\nport = \(Self.quoted(ssh.port))\n"
             + "user = \(Self.quoted(ssh.user))\nidentity_file = \(Self.quoted(ssh.identityFile))\n"

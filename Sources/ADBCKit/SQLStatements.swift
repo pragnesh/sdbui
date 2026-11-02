@@ -38,16 +38,31 @@ extension SQLDialect {
                 case "'", "\"", "`":
                     hasContent = true
                     index = endOfQuoted(scalars, from: index, quote: scalar)
-                case "-" where next == "-", "#" where self == .mysql:
+                case "-" where next == "-" && (self != .mysql || index + 2 >= scalars.count || scalars[index + 2].value <= 32), "#" where self == .mysql:
                     while index < scalars.count, scalars[index] != "\n" { index += 1 }
+                case "$" where self != .mysql:
+                    var end = index + 1
+                    while end < scalars.count && (scalars[end].properties.isAlphabetic || scalars[end].properties.numericType != nil || scalars[end] == "_") { end += 1 }
+                    if end < scalars.count && scalars[end] == "$" {
+                        hasContent = true
+                        let delimiter = Array(scalars[index...end])
+                        index = end + 1
+                        while index + delimiter.count <= scalars.count,
+                            Array(scalars[index..<(index + delimiter.count)]) != delimiter { index += 1 }
+                        index = min(index + delimiter.count, scalars.count)
+                    } else { hasContent = true; index += 1 }
                 case "/" where next == "*":
+                    // MySQL executable comments must reach the safety assessment.
+                    if self == .mysql && index + 2 < scalars.count && scalars[index + 2] == "!" { hasContent = true }
                     index += 2
-                    while index < scalars.count,
-                        !(scalars[index] == "*" && index + 1 < scalars.count && scalars[index + 1] == "/")
-                    {
-                        index += 1
+                    var nesting = 1
+                    while index < scalars.count && nesting > 0 {
+                        if index + 1 < scalars.count && scalars[index] == "/" && scalars[index + 1] == "*" && self != .mysql {
+                            nesting += 1; index += 2
+                        } else if index + 1 < scalars.count && scalars[index] == "*" && scalars[index + 1] == "/" {
+                            nesting -= 1; index += 2
+                        } else { index += 1 }
                     }
-                    index += 2
                 case ";":
                     finish(at: index, includingTerminator: true)
                     index += 1
@@ -75,7 +90,7 @@ extension SQLDialect {
         var index = start + 1
         while index < scalars.count {
             let scalar = scalars[index]
-            if scalar == "\\" && quote == "'" && self == .mysql {
+            if scalar == "\\" && ((self == .mysql && quote != "`") || (quote == "'" && start > 0 && (scalars[start - 1] == "E" || scalars[start - 1] == "e"))) {
                 index += 2
             } else if scalar == quote {
                 if index + 1 < scalars.count && scalars[index + 1] == quote {

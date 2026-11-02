@@ -52,6 +52,7 @@ struct TopBar: View {
         let _ = revision
         let _ = model.watch("topbar", of: { model.selectedTab }) { revision &+= 1 }
         HStack(spacing: 8) {
+            FavoriteSafetyBadge(safety: model.connectionSafety)
             Spacer()
             HStack(spacing: 2) {
                 ForEach(BrowserTab.allCases, id: \.self) { tab in

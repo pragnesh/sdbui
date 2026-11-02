@@ -34,13 +34,15 @@ public struct ConnectionProfile: Sendable, Identifiable, Hashable {
     public var options: [Option]
     public var url: URL
     public var ssh: SSHSettings = .init()
+    public var safety: FavoriteSafety = .init()
 
-    public init(id: String, driver: String, options: [Option], url: URL, ssh: SSHSettings = .init()) {
+    public init(id: String, driver: String, options: [Option], url: URL, ssh: SSHSettings = .init(), safety: FavoriteSafety = .init()) {
         self.id = id
         self.driver = driver
         self.options = options
         self.url = url
         self.ssh = ssh
+        self.safety = safety
     }
 
     public struct Option: Sendable, Hashable {
@@ -265,7 +267,10 @@ public enum Discovery {
             id: url.deletingPathExtension().lastPathComponent,
             driver: driver,
             options: toml.entries(in: "Options").map { .init(key: $0.key, value: $0.value.stringValue) },
-            url: url, ssh: ssh
+            url: url, ssh: ssh, safety: FavoriteSafety(
+                label: toml["SDBUI", "label"]?.stringValue ?? "",
+                color: toml["SDBUI", "color"]?.stringValue ?? "None",
+                readOnly: toml["SDBUI", "read_only"]?.stringValue == "true")
         )
     }
 
