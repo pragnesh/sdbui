@@ -56,6 +56,13 @@ static void clipboard_read(GObject *object, GAsyncResult *result, gpointer data)
     g_main_loop_quit(loop);
 }
 static gboolean verify(gpointer data) {
+    GtkWidget *font_view = find(grid, GTK_TYPE_COLUMN_VIEW);
+    GtkWidget *font_cell = find(grid, GTK_TYPE_INSCRIPTION);
+    g_assert_nonnull(font_view);
+    g_assert_nonnull(font_cell);
+    const PangoFontDescription *font = pango_context_get_font_description(gtk_widget_get_pango_context(font_cell));
+    /* The local CSS font must reach actual recycled cell widgets. */
+    g_assert_cmpint(pango_font_description_get_size(font), ==, 20 * PANGO_SCALE);
     (void)data;
     GtkWidget *cell = find(grid, GTK_TYPE_INSCRIPTION);
     g_assert_nonnull(cell);
@@ -98,8 +105,54 @@ static gboolean verify(gpointer data) {
     g_object_unref(viewer);
     return G_SOURCE_REMOVE;
 }
+static int shortcut_calls;
+static int shortcut_action(void *context, int32_t command) {
+    g_assert_true(context == &shortcut_calls);
+    shortcut_calls++;
+    return command != 7;
+}
+static void test_shortcuts(void) {
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_t, GDK_CONTROL_MASK), ==, 1);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_T, GDK_CONTROL_MASK | GDK_LOCK_MASK), ==, 1);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_w, GDK_CONTROL_MASK), ==, 2);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_Tab, GDK_CONTROL_MASK), ==, 3);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_ISO_Left_Tab, GDK_CONTROL_MASK | GDK_SHIFT_MASK), ==, 4);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_9, GDK_CONTROL_MASK), ==, 109);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_1, GDK_CONTROL_MASK), ==, 101);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_p, GDK_CONTROL_MASK), ==, 5);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_f, GDK_CONTROL_MASK), ==, 5);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_l, GDK_CONTROL_MASK), ==, 6);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_Escape, 0), ==, 7);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_F5, 0), ==, 8);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_Page_Up, GDK_CONTROL_MASK), ==, 9);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_Page_Down, GDK_CONTROL_MASK), ==, 10);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_equal, GDK_CONTROL_MASK), ==, 11);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_plus, GDK_CONTROL_MASK | GDK_SHIFT_MASK), ==, 11);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_minus, GDK_CONTROL_MASK), ==, 12);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_Return, GDK_CONTROL_MASK), ==, 0);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_t, GDK_CONTROL_MASK | GDK_ALT_MASK), ==, 0);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_t, GDK_CONTROL_MASK | GDK_SHIFT_MASK), ==, 0);
+    g_assert_cmpint(sdbui_shortcut_command(GDK_KEY_t, 0), ==, 0);
+    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    g_object_ref_sink(root);
+    sdbui_shortcuts_install(root, &shortcut_calls, shortcut_action, NULL);
+    sdbui_shortcuts_install(root, &shortcut_calls, shortcut_action, NULL);
+    GListModel *controllers = gtk_widget_observe_controllers(root);
+    g_assert_cmpuint(g_list_model_get_n_items(controllers), ==, 1);
+    GObject *controller = g_list_model_get_item(controllers, 0);
+    gboolean handled = FALSE;
+    g_signal_emit_by_name(controller, "key-pressed", GDK_KEY_t, 0, GDK_CONTROL_MASK, &handled);
+    g_assert_true(handled);
+    g_assert_cmpint(shortcut_calls, ==, 1);
+    g_signal_emit_by_name(controller, "key-pressed", GDK_KEY_Escape, 0, 0, &handled);
+    g_assert_false(handled);
+    g_assert_cmpint(shortcut_calls, ==, 2);
+    g_object_unref(controller); g_object_unref(controllers); g_object_unref(root);
+}
+
 int main(void) {
     gtk_init();
+    test_shortcuts();
     GtkWidget *editor = gtk_text_view_new();
     g_object_ref_sink(editor);
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor));
@@ -135,11 +188,12 @@ int main(void) {
     gtk_window_set_default_size(GTK_WINDOW(window), 200, 200);
     gtk_window_set_child(GTK_WINDOW(window), grid);
     gtk_window_present(GTK_WINDOW(window));
+    sdbui_grid_font_size(grid, 20);
     loop = g_main_loop_new(NULL, FALSE);
     g_timeout_add(300, verify, NULL);
     g_main_loop_run(loop);
     gtk_window_destroy(GTK_WINDOW(window));
     g_main_loop_unref(loop);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing\n");
     return 0;
 }

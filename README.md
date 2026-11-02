@@ -62,6 +62,23 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   CSV export. The editor's text is saved as a draft per connection (by
   favorite name) as you type and restored the next time you connect to it
 
+Keyboard shortcuts on Linux/GTK:
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+T / Ctrl+W | Open / close the current connection tab |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous connection tab, wrapping around |
+| Ctrl+1…8 / Ctrl+9 | Select a numbered tab / the last tab |
+| Ctrl+P or Ctrl+F | Focus and select the table filter |
+| Ctrl+L | Open the Query pane and focus the editor, preserving its selection |
+| Esc | Cancel the active query or dismiss pending SQL confirmation |
+| F5 | Refresh tables and the current table view; reload favorites when disconnected |
+| Ctrl+PgUp / Ctrl+PgDn | Previous / next browsed page, within page bounds |
+| Enter in a filter | Apply the table-name or row-value filter |
+| Ctrl+= (or Ctrl++) / Ctrl+− | Increase / decrease editor and result-grid font size (9–28 px, per tab) |
+
+Shortcuts target the active connection. Existing editor and grid shortcuts such as Ctrl+Enter, Ctrl+C, and Ctrl+Z continue to work. F5 leaves manual query SQL and results intact; it does not rerun editor SQL. Font sizes are retained while switching tabs for the current session.
+
 The query status line keeps the last manual run's row count, duration and
 Max rows truncation warning, independently of table loading and exports.
 Failures include **Copy error** for the complete message. When the driver

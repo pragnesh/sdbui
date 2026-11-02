@@ -94,12 +94,13 @@ struct SQLEditor: View {
         // Re-render only when code replaces the text (which bumps
         // `sqlRevision`), not on every keystroke.
         let _ = revision
-        let _ = model.watch("editor", of: { [AnyHashable(model.sqlRevision), AnyHashable(model.queryErrorLocation?.id)] }) { revision &+= 1 }
+        let _ = model.watch("editor", of: { [AnyHashable(model.sqlRevision), AnyHashable(model.queryErrorLocation?.id), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
         TextEditor(text: model.binding(\.sql)) { submission in
             model.runCurrentStatement(submission)
         }
             .revealingQueryError(model, navigation: navigation)
-            .font(.system(size: 13, design: .monospaced))
+            .shortcutFocusTarget("editor")
+            .font(.system(size: model.queryFontSize, design: .monospaced))
             .padding(4)
             .background(Color.adaptive(light: Color(white: 0.95), dark: Color(white: 0.15)))
             .cornerRadius(4)

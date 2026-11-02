@@ -284,3 +284,132 @@ int sdbui_editor_reveal(void *editor, int offset) {
     if (gtk_widget_get_mapped(text)) gtk_widget_grab_focus(text);
     return 1;
 }
+
+/* Application shortcuts are captured before text widgets consume Ctrl+Tab,
+ * Ctrl+L, etc. Unknown combinations continue to the focused widget. */
+int32_t sdbui_shortcut_command(uint32_t keyval, uint32_t modifiers) {
+    guint key = gdk_keyval_to_lower(keyval);
+    guint mods = modifiers & (GDK_CONTROL_MASK | GDK_SHIFT_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_META_MASK);
+    if (!mods) {
+        if (key == GDK_KEY_Escape) return 7;
+        if (key == GDK_KEY_F5) return 8;
+        return 0;
+    }
+    if (!(mods & GDK_CONTROL_MASK) || (mods & (GDK_ALT_MASK | GDK_SUPER_MASK | GDK_META_MASK))) return 0;
+    if (key == GDK_KEY_Tab || key == GDK_KEY_ISO_Left_Tab) return (mods & GDK_SHIFT_MASK) || key == GDK_KEY_ISO_Left_Tab ? 4 : 3;
+    if (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_KP_Add) return 11;
+    if (key == GDK_KEY_minus || key == GDK_KEY_KP_Subtract) return 12;
+    if (mods & GDK_SHIFT_MASK) return 0;
+    if (key >= GDK_KEY_1 && key <= GDK_KEY_9) return 101 + (int32_t)(key - GDK_KEY_1);
+    switch (key) {
+    case GDK_KEY_t: return 1;
+    case GDK_KEY_w: return 2;
+    case GDK_KEY_p: case GDK_KEY_f: return 5;
+    case GDK_KEY_l: return 6;
+    case GDK_KEY_Page_Up: case GDK_KEY_KP_Page_Up: return 9;
+    case GDK_KEY_Page_Down: case GDK_KEY_KP_Page_Down: return 10;
+    default: return 0;
+    }
+}
+
+void sdbui_shortcut_target(void *widget, const char *name) {
+    g_object_set_data_full(G_OBJECT(widget), "sdbui-shortcut-target", g_strdup(name), g_free);
+}
+
+static GtkWidget *find_shortcut_target(GtkWidget *widget, const char *name) {
+    if (!gtk_widget_get_mapped(widget)) return NULL;
+    if (g_strcmp0(g_object_get_data(G_OBJECT(widget), "sdbui-shortcut-target"), name) == 0) return widget;
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_shortcut_target(child, name);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+typedef struct { GWeakRef root; const char *target; int attempts; } ShortcutFocus;
+static gboolean focus_shortcut_target(gpointer data) {
+    ShortcutFocus *request = data;
+    GtkWidget *root = g_weak_ref_get(&request->root);
+    if (!root) return G_SOURCE_REMOVE;
+    GtkWidget *target = find_shortcut_target(root, request->target);
+    gboolean focused = FALSE;
+    if (target) {
+        GtkWidget *text = find_text_view(target);
+        focused = gtk_widget_grab_focus(text ? text : target);
+        if (focused && GTK_IS_EDITABLE(target)) gtk_editable_select_region(GTK_EDITABLE(target), 0, -1);
+    }
+    g_object_unref(root);
+    return !focused && ++request->attempts < 10 ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
+}
+static void free_shortcut_focus(gpointer data) {
+    ShortcutFocus *request = data;
+    g_weak_ref_clear(&request->root);
+    g_free(request);
+}
+
+typedef struct { void *context; SDBUIShortcutAction action; SDBUIValueDestroy destroy; } Shortcuts;
+static void free_shortcuts(gpointer data) {
+    Shortcuts *shortcuts = data;
+    if (shortcuts->destroy) shortcuts->destroy(shortcuts->context);
+    g_free(shortcuts);
+}
+static gboolean shortcut_key(GtkEventControllerKey *controller, guint key, guint code, GdkModifierType modifiers, gpointer data) {
+    (void)code;
+    Shortcuts *shortcuts = data;
+    int32_t command = sdbui_shortcut_command(key, modifiers);
+    if (!command || !shortcuts->action || !shortcuts->action(shortcuts->context, command)) return FALSE;
+    if (command == 5 || command == 6) {
+        ShortcutFocus *request = g_new0(ShortcutFocus, 1);
+        g_weak_ref_init(&request->root, gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+        request->target = command == 5 ? "table-filter" : "editor";
+        /* Allow a Query tab selected by Ctrl+L to finish creating its editor. */
+        g_timeout_add_full(G_PRIORITY_DEFAULT, 16, focus_shortcut_target, request, free_shortcut_focus);
+    }
+    return TRUE;
+}
+void sdbui_shortcuts_install(void *root, void *context, SDBUIShortcutAction action, SDBUIValueDestroy destroy) {
+    if (g_object_get_data(G_OBJECT(root), "sdbui-shortcuts")) {
+        if (destroy) destroy(context);
+        return;
+    }
+    Shortcuts *shortcuts = g_new0(Shortcuts, 1);
+    shortcuts->context = context; shortcuts->action = action; shortcuts->destroy = destroy;
+    g_object_set_data_full(G_OBJECT(root), "sdbui-shortcuts", shortcuts, free_shortcuts);
+    GtkEventController *keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(shortcut_key), shortcuts);
+    gtk_widget_add_controller(GTK_WIDGET(root), keys);
+}
+
+/* Scope the provider to one grid and remove it with that grid. */
+typedef struct { GdkDisplay *display; GtkCssProvider *provider; char *name; int size; } GridFont;
+static void free_grid_font(gpointer data) {
+    GridFont *font = data;
+    gtk_style_context_remove_provider_for_display(font->display, GTK_STYLE_PROVIDER(font->provider));
+    g_object_unref(font->display); g_object_unref(font->provider);
+    g_free(font->name); g_free(font);
+}
+void sdbui_grid_font_size(void *grid, int size) {
+    static guint next_id;
+    GtkWidget *view = find_column_view(GTK_WIDGET(grid));
+    if (!view || size < 9 || size > 28) return;
+    GridFont *font = g_object_get_data(G_OBJECT(view), "sdbui-grid-font");
+    if (font && font->size == size) return;
+    if (!font) {
+        font = g_new0(GridFont, 1);
+        font->provider = gtk_css_provider_new();
+        font->display = g_object_ref(gtk_widget_get_display(view));
+        font->name = g_strdup_printf("sdbui-grid-font-%u", ++next_id);
+        gtk_widget_add_css_class(view, font->name);
+        gtk_style_context_add_provider_for_display(font->display, GTK_STYLE_PROVIDER(font->provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+        g_object_set_data_full(G_OBJECT(view), "sdbui-grid-font", font, free_grid_font);
+    }
+    char *css = g_strdup_printf(".%s, .%s * { font-size: %dpx; }", font->name, font->name, size);
+#if GTK_CHECK_VERSION(4, 12, 0)
+    gtk_css_provider_load_from_string(font->provider, css);
+#else
+    gtk_css_provider_load_from_data(font->provider, css, -1);
+#endif
+    g_free(css);
+    font->size = size;
+}

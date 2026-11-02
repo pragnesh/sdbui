@@ -118,5 +118,6 @@ struct ConnectionWorkspaceView: View {
             ConnectionPages(tabs: workspace.tabs, selectedID: workspace.selectedID)
             .frame(maxHeight: .infinity)
         }
+        .workspaceShortcuts(workspace)
     }
 }

@@ -204,6 +204,8 @@ struct TableBrowser: View {
                     set: { text in model.editTableFilter(text) { _ in filterRevision &+= 1 } }
                 )
             )
+            .shortcutFocusTarget("table-filter")
+            .onSubmit { model.flushTableFilter(); filterRevision &+= 1 }
         }
     }
 }
@@ -295,9 +297,9 @@ struct PaneGrid: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch(key, of: { pane.revision }) { revision &+= 1 }
+        let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
         if pane.hasColumns {
-            grid()
+            grid().queryGridFontSize(model.queryFontSize)
         } else {
             VStack(alignment: .leading) {
                 HStack {

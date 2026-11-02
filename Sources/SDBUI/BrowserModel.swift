@@ -73,6 +73,25 @@ final class BrowserModel {
         self.healthCheckIntervalNanoseconds = healthCheckIntervalNanoseconds
     }
 
+    @ObservationIgnored private(set) var queryFontSize = 13.0 { didSet { stateChanged() } }
+
+    func adjustQueryFontSize(by delta: Int) {
+        queryFontSize = min(28, max(9, queryFontSize + Double(delta)))
+    }
+
+    func flushTableFilter() {
+        tableFilterTask?.cancel()
+        tableFilterTask = nil
+    }
+
+    func refreshActiveView() {
+        guard canUseConnection, !isRunning else { return }
+        refreshTables()
+        loadedTables = [:]
+        if selectedTab == .query, isBrowsing, let table = selectedTable { loadContent(table) }
+        else { loadCurrentTab() }
+    }
+
     var canUseConnection: Bool { connection != nil && !isConnectionLost && !isConnecting }
 
 
@@ -808,6 +827,7 @@ final class BrowserModel {
         isBrowsing = true
         isRunning = true
         errorMessage = nil
+        queryCancellationRequested = false
         statusMessage = "Loading \(table.name)…"
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
@@ -828,7 +848,7 @@ final class BrowserModel {
                 case .failure(let error):
                     contentHasMore = false
                     queryPane.show(nil)
-                    statusMessage = "Loading \(table.name) failed"
+                    statusMessage = "Loading \(table.name) " + (queryCancellationRequested ? "cancelled" : "failed")
                     errorMessage = "\(error)"
             }
         }
@@ -1031,6 +1051,7 @@ final class BrowserModel {
             return
         }
         pendingQuery = nil
+        queryCancellationRequested = false
         queryStatus = QueryStatus(text: "Running…")
         let runMaxRows = maxRows ?? 10_000
         // Running SQL by hand leaves table browsing (filter bar, pager,
@@ -1049,6 +1070,13 @@ final class BrowserModel {
             var shown: QueryResult?
             var elapsed = Duration.zero
             for (index, statement) in statements.enumerated() {
+                if queryCancellationRequested {
+                    isRunning = false
+                    statusMessage = "Query cancelled"
+                    queryStatus = .failed("Execution stopped. Statements already completed were not rolled back.",
+                        elapsed: started.duration(to: clock.now), cancelled: true)
+                    return
+                }
                 statusMessage =
                     statements.count > 1
                     ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
@@ -1065,12 +1093,12 @@ final class BrowserModel {
                         }
                     case .failure(let error):
                         isRunning = false
-                        statusMessage = "Query failed"
                         let message = statements.count > 1
                             ? "Statement \(index + 1) of \(statements.count) failed: \(error)" : "\(error)"
                         errorMessage = message
                         let adbcError = error as? ADBCError
-                        let cancelled = adbcError.map { $0.message.contains("[CANCELLED]") || $0.message.contains("[SQLSTATE 57014]") } ?? false
+                        let cancelled = queryCancellationRequested || (adbcError.map { $0.message.contains("[CANCELLED]") || $0.message.contains("[SQLSTATE 57014]") } ?? false)
+                        statusMessage = cancelled ? "Query cancelled" : "Query failed"
                         queryStatus = .failed(message, elapsed: started.duration(to: clock.now), cancelled: cancelled)
                         if sql == sourceSQL {
                             queryErrorLocation = QueryErrorLocation.resolve(position: adbcError?.statementPosition,
@@ -1104,9 +1132,13 @@ final class BrowserModel {
         run(request.statements, sourceSQL: request.sourceSQL, baseOffset: request.baseOffset, confirmed: true)
     }
 
+    @ObservationIgnored private var queryCancellationRequested = false
+
     func cancelQuery() {
         guard let connection, isRunning else { return }
-        queryStatus = QueryStatus(text: "Cancelling…")
+        queryCancellationRequested = true
+        if isBrowsing { statusMessage = "Cancelling…" }
+        else { queryStatus = QueryStatus(text: "Cancelling…") }
         Task.detached {
             do {
                 try connection.cancel()
