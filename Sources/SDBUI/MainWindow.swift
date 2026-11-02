@@ -2,9 +2,9 @@ import ADBCKit
 import Foundation
 import SwiftCrossUI
 
-/// The connected window, laid out like Sequel Ace: a toolbar with the
-/// database selector and tabs, the table list on the left and the selected
-/// tab on the right.
+/// The connected window, laid out like Sequel Ace: a toolbar with the tabs,
+/// the database and table lists on the left and the selected tab on the
+/// right.
 struct MainWindow: View {
     var model: BrowserModel
 
@@ -52,17 +52,6 @@ struct TopBar: View {
         let _ = revision
         let _ = model.watch("topbar", of: { model.selectedTab }) { revision &+= 1 }
         HStack(spacing: 8) {
-            Text(model.dialect.namespaceLabel)
-                .fixedSize()
-            Picker(
-                of: model.databases,
-                selection: Binding(
-                    get: { model.selectedDatabase },
-                    set: { model.selectDatabase($0) }
-                )
-            )
-            .fixedSize()
-            .disabled(!model.canUseConnection)
             Spacer()
             HStack(spacing: 2) {
                 ForEach(BrowserTab.allCases, id: \.self) { tab in
@@ -102,13 +91,62 @@ struct TableSidebar: View {
                     .fixedSize()
             }
             Divider()
-            // Filtering re-lays-out only the list (see MainWindow).
-            GeometryReader { _ in
-                TableBrowser(model: model)
+            // Drag the divider to share the height between the lists.
+            // Filtering re-lays-out only its list (see MainWindow).
+            VSplitView(topHeight: 200) {
+                GeometryReader { _ in
+                    DatabaseList(model: model)
+                        .padding(.bottom, 8)
+                }
+                .frame(minHeight: 110)
+            } bottom: {
+                GeometryReader { _ in
+                    TableBrowser(model: model)
+                        .padding(.top, 8)
+                }
+                .frame(minHeight: 140)
             }
             .disabled(!model.canUseConnection)
         }
         .padding()
+    }
+}
+
+/// The databases (MySQL) or schemas (PostgreSQL) that contain tables;
+/// selecting one shows its tables below.
+struct DatabaseList: View {
+    var model: BrowserModel
+    @State private var filter = ""
+
+    var body: some View {
+        let all = model.databases
+        let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        let databases = needle.isEmpty ? all : all.filter { $0.lowercased().contains(needle) }
+        VStack(alignment: .leading, spacing: 8) {
+            Text(
+                all.isEmpty
+                    ? "\(model.dialect.namespaceLabel.uppercased())S"
+                    : "\(model.dialect.namespaceLabel.uppercased())S · \(databases.count)"
+            )
+            .font(.caption).foregroundColor(.gray)
+            .fixedSize()
+            ScrollView {
+                List(
+                    databases,
+                    id: \.self,
+                    selection: Binding(
+                        get: { model.selectedDatabase },
+                        // A list can clear its selection; keep showing a database.
+                        set: { if let database = $0 { model.selectDatabase(database) } }
+                    )
+                ) { database in
+                    Text(database)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            TextField("Filter \(model.dialect.namespaceLabel.lowercased())s", text: $filter)
+        }
     }
 }
 

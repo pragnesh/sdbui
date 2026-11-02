@@ -36,8 +36,7 @@ this project includes a tiny equivalent:
 
 The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
 
-- **Toolbar:** database (MySQL) or schema (PostgreSQL) selector and the
-  Query / Structure / Table Info tabs
+- **Toolbar:** the Query / Structure / Table Info tabs
 - **Connection tabs:** open several databases at once with **+ New connection**.
   Each tab keeps its SQL, results, table selection and connection independently.
   Switching reuses each tab's editor and grid. Queries continue in background
@@ -45,7 +44,8 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   History and snippets are shared across connections.
 - **Favorites:** single-click to edit settings; double-click (or press Enter)
   to connect to the saved profile in the current connection tab.
-- **Sidebar:** the selected database's tables (via `AdbcConnectionGetObjects`)
+- **Sidebar:** a list of databases (MySQL) or schemas (PostgreSQL), and
+  below it the selected database's tables (via `AdbcConnectionGetObjects`)
   with a filter
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
 - **Table Info:** engine, row estimate, sizes, collation, … and the
