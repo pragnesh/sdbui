@@ -22,6 +22,7 @@ struct QueryTab: View {
                         .frame(width: 400, height: 360)
                 }
             }
+            QueryStatusLine(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)
             PaneGrid(
@@ -86,15 +87,17 @@ struct SQLEditor: View {
     var model: BrowserModel
     var height: Double = 180
     @State private var revision = 0
+    @State private var navigation = EditorErrorNavigation()
 
     var body: some View {
         // Re-render only when code replaces the text (which bumps
         // `sqlRevision`), not on every keystroke.
         let _ = revision
-        let _ = model.watch("editor", of: { model.sqlRevision }) { revision &+= 1 }
+        let _ = model.watch("editor", of: { [AnyHashable(model.sqlRevision), AnyHashable(model.queryErrorLocation?.id)] }) { revision &+= 1 }
         TextEditor(text: model.binding(\.sql)) { submission in
             model.runCurrentStatement(submission)
         }
+            .revealingQueryError(model, navigation: navigation)
             .font(.system(size: 13, design: .monospaced))
             .padding(4)
             .background(Color.adaptive(light: Color(white: 0.95), dark: Color(white: 0.15)))

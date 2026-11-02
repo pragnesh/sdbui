@@ -4,6 +4,13 @@
 #include <assert.h>
 #include <errno.h>
 
+static const uint8_t position_bytes[] = {'1', '7'}; // deliberately not NUL-terminated
+static struct AdbcErrorDetail position_detail = {"PG_DIAG_STATEMENT_POSITION", position_bytes, 2};
+static int detail_count(const struct AdbcError* error) { (void)error; return 1; }
+static struct AdbcErrorDetail detail_get(const struct AdbcError* error, int index) {
+  (void)error; assert(index == 0); return position_detail;
+}
+
 static int alive, stream_releases, statement_releases, fail_stage, read_error;
 static int schema(struct ArrowArrayStream* stream, struct ArrowSchema* out) {
   assert(alive && stream->private_data == &alive);
@@ -36,7 +43,10 @@ static AdbcStatusCode statement_new(struct AdbcConnection* connection,
 static AdbcStatusCode set_sql(struct AdbcStatement* statement, const char* sql,
                               struct AdbcError* error) {
   (void)statement; (void)sql;
-  if (fail_stage == 2) memcpy(error->sqlstate, "42601", 5);
+  if (fail_stage == 2) {
+    memcpy(error->sqlstate, "42601", 5);
+    error->private_data = &alive;
+  }
   return fail_stage == 2 ? ADBC_STATUS_INVALID_ARGUMENT : ADBC_STATUS_OK;
 }
 static AdbcStatusCode execute(struct AdbcStatement* statement,
@@ -59,6 +69,24 @@ static AdbcStatusCode release_statement(struct AdbcStatement* statement,
 }
 int main(void) {
   CAdbcSession session = {0};
+  session.driver.ErrorGetDetailCount = detail_count;
+  session.driver.ErrorGetDetail = detail_get;
+  struct AdbcError details = make_error();
+  details.private_data = &alive;
+  assert(statement_error_position(&session.driver, &details) == 17);
+  position_detail.key = "PG_DIAG_INTERNAL_POSITION";
+  assert(statement_error_position(&session.driver, &details) == 0);
+  position_detail.key = "PG_DIAG_STATEMENT_POSITION";
+  position_detail.value = (const uint8_t*)"9223372036854775808";
+  position_detail.value_length = 19;
+  assert(statement_error_position(&session.driver, &details) == 0);
+  position_detail.value = (const uint8_t*)"-2";
+  position_detail.value_length = 2;
+  assert(statement_error_position(&session.driver, &details) == 0);
+  position_detail.value = position_bytes;
+  position_detail.value_length = 2;
+  details.vendor_code = 0; // legacy driver errors do not expose private data
+  assert(statement_error_position(&session.driver, &details) == 0);
   session.driver.StatementNew = statement_new;
   session.driver.StatementSetSqlQuery = set_sql;
   session.driver.StatementExecuteQuery = execute;
@@ -69,7 +97,9 @@ int main(void) {
     read_error = scenario == 4;
     struct ArrowArrayStream stream = {0};
     char* error = NULL;
-    AdbcStatusCode status = cadbc_execute(&session, "SELECT 1", &stream, NULL, &error);
+    int64_t position = -1;
+    AdbcStatusCode status = cadbc_execute(&session, "SELECT 1", &stream, NULL, &position, &error);
+    assert(position == (fail_stage == 2 ? 17 : 0));
     if (fail_stage) {
       assert(status != ADBC_STATUS_OK && error);
       if (fail_stage == 2) assert(strstr(error, "[SQLSTATE 42601]"));

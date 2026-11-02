@@ -100,6 +100,22 @@ static gboolean verify(gpointer data) {
 }
 int main(void) {
     gtk_init();
+    GtkWidget *editor = gtk_text_view_new();
+    g_object_ref_sink(editor);
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor));
+    gtk_text_buffer_set_text(buffer, "A🙂é\nSELECT", -1);
+    g_assert_true(sdbui_editor_reveal(editor, 3));
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(buffer, &cursor, gtk_text_buffer_get_insert(buffer));
+    g_assert_cmpint(gtk_text_iter_get_offset(&cursor), ==, 3);
+    g_assert_false(sdbui_editor_reveal(editor, -1));
+    g_assert_false(sdbui_editor_reveal(editor, 500));
+    GtkTextIter begin, finish;
+    gtk_text_buffer_get_bounds(buffer, &begin, &finish);
+    char *unchanged = gtk_text_buffer_get_text(buffer, &begin, &finish, FALSE);
+    g_assert_cmpstr(unchanged, ==, "A🙂é\nSELECT");
+    g_free(unchanged);
+    g_object_unref(editor);
     GListStore *rows = g_list_store_new(G_TYPE_OBJECT);
     GObject *row = g_object_new(G_TYPE_OBJECT, NULL);
     g_list_store_append(rows, row); g_object_unref(row);
@@ -124,6 +140,6 @@ int main(void) {
     g_main_loop_run(loop);
     gtk_window_destroy(GTK_WINDOW(window));
     g_main_loop_unref(loop);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation\n");
     return 0;
 }

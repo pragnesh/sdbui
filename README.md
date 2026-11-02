@@ -62,6 +62,13 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   CSV export. The editor's text is saved as a draft per connection (by
   favorite name) as you type and restored the next time you connect to it
 
+The query status line keeps the last manual run's row count, duration and
+Max rows truncation warning, independently of table loading and exports.
+Failures include **Copy error** for the complete message. When the driver
+provides a statement position (supported by the PostgreSQL driver), the editor
+moves to that position, including within selections and multi-statement scripts.
+It leaves the cursor alone if you changed the SQL while the query was running.
+
 Results are shown in a virtualized grid (GTK `GtkColumnView`): only the
 visible cells are formatted and drawn, so large results scroll smoothly.
 Hover over a clipped cell for a bounded preview; cells that fit have no tooltip.

@@ -83,6 +83,28 @@ static struct AdbcError make_error(void) {
   return error;
 }
 
+/// Read only a statement position, never an internal-query position or a
+/// number inferred from human-readable SQL/error text. Detail bytes are not
+/// necessarily NUL-terminated and must be consumed before releasing the error.
+static int64_t statement_error_position(struct AdbcDriver* driver, struct AdbcError* error) {
+  if (error->vendor_code != ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA || !error->private_data ||
+      !driver->ErrorGetDetailCount || !driver->ErrorGetDetail) return 0;
+  int count = driver->ErrorGetDetailCount(error);
+  for (int i = 0; i < count; i++) {
+    struct AdbcErrorDetail detail = driver->ErrorGetDetail(error, i);
+    if (!detail.key || strcmp(detail.key, "PG_DIAG_STATEMENT_POSITION") != 0 ||
+        !detail.value || !detail.value_length || detail.value_length > 19) continue;
+    int64_t position = 0;
+    for (size_t j = 0; j < detail.value_length; j++) {
+      int digit = detail.value[j] - '0';
+      if (digit < 0 || digit > 9 || position > (INT64_MAX - digit) / 10) return 0;
+      position = position * 10 + digit;
+    }
+    return position;
+  }
+  return 0;
+}
+
 // MARK: - Driver loading
 
 /// Mirror the reference driver manager's default entrypoint derivation:
@@ -291,7 +313,8 @@ static void statement_stream_release(struct ArrowArrayStream* stream) {
 
 AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
                              struct ArrowArrayStream* out, int64_t* rows_affected,
-                             char** error_out) {
+                             int64_t* error_position, char** error_out) {
+  if (error_position) *error_position = 0;
   struct StatementStream* owner = calloc(1, sizeof(*owner));
   if (!owner) {
     set_error(error_out, format_string("out of memory"));
@@ -312,12 +335,14 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
   error = make_error();
   status = session->driver.StatementSetSqlQuery(&owner->statement, sql, &error);
   if (status != ADBC_STATUS_OK) {
+    if (error_position) *error_position = statement_error_position(&session->driver, &error);
     take_error(status, &error, "Failed to set SQL query", error_out);
   } else {
     error = make_error();
     status = session->driver.StatementExecuteQuery(
         &owner->statement, out ? &owner->stream : NULL, rows_affected, &error);
     if (status != ADBC_STATUS_OK) {
+      if (error_position) *error_position = statement_error_position(&session->driver, &error);
       take_error(status, &error, "Query failed", error_out);
     }
   }

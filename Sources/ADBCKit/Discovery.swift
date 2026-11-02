@@ -328,7 +328,12 @@ public enum Discovery {
 
 public struct ADBCError: Error, CustomStringConvertible, LocalizedError {
     public var message: String
-    public init(_ message: String) { self.message = message }
+    /// Driver-reported 1-based character offset in the submitted statement.
+    public var statementPosition: Int?
+    public init(_ message: String, statementPosition: Int? = nil) {
+        self.message = message
+        self.statementPosition = statementPosition
+    }
     public var description: String { message }
     public var errorDescription: String? { message }
 

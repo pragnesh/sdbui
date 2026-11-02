@@ -216,6 +216,9 @@ final class BrowserModel {
     var maxRows: Int? = 10_000
     let maxRowsOptions = [100, 1_000, 10_000, 100_000]
 
+    @ObservationIgnored private(set) var queryStatus: QueryStatus? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var queryErrorLocation: QueryErrorLocation? { didSet { stateChanged() } }
+
     // MARK: Status
 
     @ObservationIgnored private(set) var statusMessage = "Not connected" {
@@ -501,6 +504,7 @@ final class BrowserModel {
         guard connection === failed, !isConnectionLost, !isConnecting,
               failed.isConnectionLoss(error) else { return }
         isConnectionLost = true
+        if isRunning { queryStatus = QueryStatus(text: "Connection lost", error: "\(error)") }
         isRunning = false
         connectionMonitor?.cancel()
         Self.release(failed)
@@ -536,6 +540,8 @@ final class BrowserModel {
     }
 
     private func resetBrowsing() {
+        queryStatus = nil
+        queryErrorLocation = nil
         tables = []
         selectedDatabase = nil
         selectedTableID = nil
@@ -963,7 +969,7 @@ final class BrowserModel {
 
     /// Runs every statement in the editor (the Run button).
     func runQuery() {
-        run(dialect.statements(in: sql).map(\.text))
+        run(dialect.statements(in: sql), sourceSQL: sql)
     }
 
     /// Ctrl+Enter: runs the selected statements, or else the statement the
@@ -971,20 +977,25 @@ final class BrowserModel {
     func runCurrentStatement(_ submission: TextEditorSubmission) {
         sql = submission.text
         if let selected = submission.selectedText {
-            run(dialect.statements(in: selected).map(\.text))
+            run(dialect.statements(in: selected), sourceSQL: submission.text, baseOffset: submission.selection?.lowerBound ?? 0)
         } else {
-            run(dialect.statement(in: submission.text, at: submission.cursor).map { [$0.text] } ?? [])
+            run(dialect.statement(in: submission.text, at: submission.cursor).map { [$0] } ?? [], sourceSQL: submission.text)
         }
     }
 
     /// Runs statements one after another, stopping at the first error, and
     /// shows the last result that has columns.
-    private func run(_ statements: [String]) {
+    private func run(_ statements: [SQLStatement], sourceSQL: String, baseOffset: Int = 0) {
         guard connection != nil, canRun else { return }
         guard !statements.isEmpty else {
             statusMessage = "Nothing to run"
+            queryStatus = QueryStatus(text: "Nothing to run")
+            queryErrorLocation = nil
             return
         }
+        queryErrorLocation = nil
+        queryStatus = QueryStatus(text: "Running…")
+        let runMaxRows = maxRows ?? 10_000
         // Running SQL by hand leaves table browsing (filter bar, pager,
         // server-side sorting); header clicks then sort in memory.
         isBrowsing = false
@@ -995,6 +1006,8 @@ final class BrowserModel {
         let historyConnection = connectionTitle
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
+            let clock = ContinuousClock()
+            let started = clock.now
             var shown: QueryResult?
             var elapsed = Duration.zero
             for (index, statement) in statements.enumerated() {
@@ -1002,8 +1015,9 @@ final class BrowserModel {
                     statements.count > 1
                     ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
                 // Record only statements we attempt, including failures, never table loads or health probes.
-                recordHistory(statement, connectionTitle: historyConnection)
-                let outcome = await fetch(statement, maxRows: maxRows ?? 10_000)
+                queryStatus = QueryStatus(text: statements.count > 1 ? "Running statement \(index + 1) of \(statements.count)…" : "Running…")
+                recordHistory(statement.text, connectionTitle: historyConnection)
+                let outcome = await fetch(statement.text, maxRows: runMaxRows)
                 guard revision == sessionRevision, canUseConnection else { return }
                 switch outcome {
                     case .success(let result):
@@ -1014,26 +1028,32 @@ final class BrowserModel {
                     case .failure(let error):
                         isRunning = false
                         statusMessage = "Query failed"
-                        errorMessage =
-                            statements.count > 1
+                        let message = statements.count > 1
                             ? "Statement \(index + 1) of \(statements.count) failed: \(error)" : "\(error)"
+                        errorMessage = message
+                        let adbcError = error as? ADBCError
+                        let cancelled = adbcError.map { $0.message.contains("[CANCELLED]") || $0.message.contains("[SQLSTATE 57014]") } ?? false
+                        queryStatus = .failed(message, elapsed: started.duration(to: clock.now), cancelled: cancelled)
+                        if sql == sourceSQL {
+                            queryErrorLocation = QueryErrorLocation.resolve(position: adbcError?.statementPosition,
+                                statement: statement, source: sourceSQL, baseOffset: baseOffset)
+                        }
                         return
                 }
             }
             isRunning = false
             if let shown {
                 queryPane.show(shown)
-                statusMessage =
-                    statements.count > 1
-                    ? "\(statements.count) statements in \(Self.format(elapsed)); last result: "
-                        + Self.summary(of: shown)
-                    : Self.summary(of: shown)
+                let completed = QueryStatus.completed(shown, elapsed: elapsed, statements: statements.count, maxRows: runMaxRows)
+                queryStatus = completed
+                statusMessage = completed.text
             }
         }
     }
 
     func cancelQuery() {
         guard let connection, isRunning else { return }
+        queryStatus = QueryStatus(text: "Cancelling…")
         Task.detached {
             do {
                 try connection.cancel()
@@ -1051,19 +1071,6 @@ final class BrowserModel {
         let seconds = Double(elapsed.components.attoseconds) / 1e18
             + Double(elapsed.components.seconds)
         return String(format: "%.3fs", seconds)
-    }
-
-    private static func summary(of result: QueryResult) -> String {
-        let time = format(result.elapsed)
-        if result.columns.isEmpty {
-            if let affected = result.rowsAffected {
-                return "\(affected) row\(affected == 1 ? "" : "s") affected in \(time)"
-            }
-            return "Statement executed in \(time)"
-        }
-        let rows = result.rowCount
-        let more = result.truncated ? " (limit reached; more rows available)" : ""
-        return "\(rows) row\(rows == 1 ? "" : "s")\(more) in \(time)"
     }
 
     // MARK: Export

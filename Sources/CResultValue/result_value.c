@@ -261,3 +261,26 @@ void sdbui_value_show(void *widget, const char *title, const char *raw, size_t r
     gtk_widget_add_controller(window, keys);
     gtk_window_present(GTK_WINDOW(window));
 }
+
+static GtkWidget *find_text_view(GtkWidget *widget) {
+    if (GTK_IS_TEXT_VIEW(widget)) return widget;
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_text_view(child);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+int sdbui_editor_reveal(void *editor, int offset) {
+    GtkWidget *text = find_text_view(GTK_WIDGET(editor));
+    if (!text) return 0;
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text));
+    if (offset < 0 || offset > gtk_text_buffer_get_char_count(buffer)) return 0;
+    GtkTextIter iter;
+    gtk_text_buffer_get_iter_at_offset(buffer, &iter, offset);
+    gtk_text_buffer_place_cursor(buffer, &iter);
+    gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(text), &iter, 0.15, FALSE, 0, 0);
+    /* A background connection must not take focus from the visible tab. */
+    if (gtk_widget_get_mapped(text)) gtk_widget_grab_focus(text);
+    return 1;
+}

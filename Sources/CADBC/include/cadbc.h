@@ -40,9 +40,10 @@ void cadbc_close(CAdbcSession* session);
 /// owns it and must release it with `cadbc_stream_release`) and
 /// `*rows_affected` is set (-1 when unknown). The stream retains its statement;
 /// the session must remain open until the stream is released.
+/// `error_position` receives a driver-reported 1-based character position, or 0.
 AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
                              struct ArrowArrayStream* out, int64_t* rows_affected,
-                             char** error_out);
+                             int64_t* error_position, char** error_out);
 
 /// Cancel the query currently running on this session (ADBC 1.1 drivers only).
 /// Safe to call from another thread.

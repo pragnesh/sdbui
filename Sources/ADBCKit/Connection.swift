@@ -138,8 +138,11 @@ public final class ADBCConnection: @unchecked Sendable {
         var stream = ArrowArrayStream()
         var rowsAffected: Int64 = -1
         var error: UnsafeMutablePointer<CChar>?
-        guard cadbc_execute(session, sql, &stream, &rowsAffected, &error) == ADBC_STATUS_OK else {
-            throw takeError(error, fallback: "Query failed")
+        var errorPosition: Int64 = 0
+        guard cadbc_execute(session, sql, &stream, &rowsAffected, &errorPosition, &error) == ADBC_STATUS_OK else {
+            var failure = takeError(error, fallback: "Query failed")
+            failure.statementPosition = errorPosition > 0 ? Int(exactly: errorPosition) : nil
+            throw failure
         }
         defer { cadbc_stream_release(&stream) }
 

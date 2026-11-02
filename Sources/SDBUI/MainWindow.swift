@@ -260,7 +260,7 @@ struct StatusBar: View {
         let _ = revision
         let _ = model.watch(
             "status",
-            of: { [AnyHashable(model.statusMessage), model.errorMessage, model.loadsInFlight] }
+            of: { [AnyHashable(model.statusMessage), model.errorMessage, model.loadsInFlight, model.selectedTab, model.queryStatus] }
         ) {
             revision &+= 1
         }
@@ -270,10 +270,13 @@ struct StatusBar: View {
                     .font(.caption)
                 Spacer()
             }
-            if let error = model.errorMessage {
-                Text(error)
-                    .foregroundColor(.red)
-                    .textSelectionEnabled()
+            if let error = model.errorMessage,
+               model.selectedTab != .query || model.queryStatus?.error != error {
+                HStack(spacing: 8) {
+                    Text(error).foregroundColor(.red).textSelectionEnabled()
+                    Spacer()
+                    CopyErrorButton(error: error)
+                }
             }
         }
     }

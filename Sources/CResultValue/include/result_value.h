@@ -9,4 +9,6 @@ typedef void (*SDBUIValueDestroy)(void *context);
 void sdbui_value_install(void *grid, void *context, SDBUIValuePreview preview,
                          SDBUIValueActivate activate, SDBUIValueDestroy destroy);
 void sdbui_value_show(void *grid, const char *title, const char *raw, size_t raw_length, const char *formatted, int is_null);
+/* Move the text editor cursor by Unicode character offset, without editing SQL. */
+int sdbui_editor_reveal(void *editor, int offset);
 #endif
