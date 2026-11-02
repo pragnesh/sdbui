@@ -62,6 +62,12 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   CSV export. The editor's text is saved as a draft per connection (by
   favorite name) as you type and restored the next time you connect to it
 
+The app restores open connection tabs, the selected tab, each editor's SQL and font size, database/table selection, active pane, window size, and each sidebar width on launch. Saved favorites reconnect using their current saved settings. Restoring never executes editor SQL or restores query results, transactions, or SSH processes; connections start fresh. Missing favorites or failed connections leave the restored SQL available for reconnecting. Unsaved/modified connection settings reopen as disconnected tabs, since session state does not store connection credentials. `SDBUI_PROFILE` or `SDBUI_SQL` launch overrides take precedence over tab restoration.
+
+Session state is autosaved to `session.json` beside the query library, with owner-only permissions, and flushed when the window closes. It contains editor SQL in plain text and references favorites by name; it does not duplicate connection URIs, passwords, or SSH settings. Corrupt or newer session files are preserved and reported rather than overwritten. Remove the session file to start with a blank workspace if needed.
+
+Closing a tab (× or Ctrl+W) asks for confirmation if a query is running or SQL has changed since opening/restoring, a successful run, or an explicit snippet save. Draft/session autosaving keeps those edits recoverable but does not suppress this confirmation. **Keep tab open** (or Esc) leaves the tab and its query intact; **Close tab** requests cancellation and removes the tab from the next restored session. Statements already completed are not rolled back. Closing the application window keeps its open tabs in the saved session.
+
 Keyboard shortcuts on Linux/GTK:
 
 | Shortcut | Action |
@@ -77,7 +83,7 @@ Keyboard shortcuts on Linux/GTK:
 | Enter in a filter | Apply the table-name or row-value filter |
 | Ctrl+= (or Ctrl++) / Ctrl+− | Increase / decrease editor and result-grid font size (9–28 px, per tab) |
 
-Shortcuts target the active connection. Existing editor and grid shortcuts such as Ctrl+Enter, Ctrl+C, and Ctrl+Z continue to work. F5 leaves manual query SQL and results intact; it does not rerun editor SQL. Font sizes are retained while switching tabs for the current session.
+Shortcuts target the active connection. Existing editor and grid shortcuts such as Ctrl+Enter, Ctrl+C, and Ctrl+Z continue to work. F5 leaves manual query SQL and results intact; it does not rerun editor SQL. Font sizes are retained per tab and restored on launch.
 
 The query status line keeps the last manual run's row count, duration and
 Max rows truncation warning, independently of table loading and exports.

@@ -29,7 +29,8 @@ extension ConnectionWorkspace {
             guard model.connection != nil else { return false }
             model.selectTab(.query)
         case .cancel:
-            if model.pendingQuery != nil { model.cancelPendingQuery() }
+            if pendingCloseID != nil { cancelClose() }
+            else if model.pendingQuery != nil { model.cancelPendingQuery() }
             else if model.isRunning { model.cancelQuery() }
             else { return false }
         case .refresh:

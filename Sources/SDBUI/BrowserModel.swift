@@ -92,6 +92,45 @@ final class BrowserModel {
         else { loadCurrentTab() }
     }
 
+    @ObservationIgnored var sessionDidChange: (@MainActor () -> Void)?
+    @ObservationIgnored private var editorBaselineSQL: String? = "" { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var sidebarWidth = 290
+    @ObservationIgnored private(set) var restorableProfileID: String?
+    @ObservationIgnored private var pendingSessionRestore: SessionTabState?
+    var hasUnsavedSQL: Bool { editorBaselineSQL.map { $0 != sql } ?? true }
+
+    func updateSidebarWidth(_ width: Int) {
+        guard (180...4000).contains(width), width != sidebarWidth else { return }
+        sidebarWidth = width
+        sessionDidChange?()
+    }
+
+    var sessionState: SessionTabState {
+        SessionTabState(favoriteID: restorableProfileID, sql: sql, dirty: hasUnsavedSQL,
+            database: pendingSessionRestore?.database ?? selectedDatabase,
+            table: pendingSessionRestore?.table ?? selectedTable.map { SessionTableState(catalog: $0.catalog, schema: $0.schema, name: $0.name) },
+            pane: pendingSessionRestore?.pane ?? selectedTab.rawValue, fontSize: queryFontSize, sidebarWidth: sidebarWidth)
+    }
+
+    func restoreSession(_ state: SessionTabState) {
+        pendingSessionRestore = state
+        restorableProfileID = state.favoriteID
+        setSQL(state.sql)
+        editorBaselineSQL = state.dirty ? nil : state.sql
+        queryFontSize = state.fontSize
+        sidebarWidth = state.sidebarWidth
+        guard let id = state.favoriteID else {
+            connectionFeedback = "SQL restored. Choose connection settings to reconnect this tab."
+            return
+        }
+        guard profiles.contains(where: { $0.id == id }) else {
+            connectionFeedback = "Saved favorite '\(id)' was not found. SQL was restored; choose a connection to continue."
+            return
+        }
+        selectFavorite(id)
+        connectSelectedProfile()
+    }
+
     var canUseConnection: Bool { connection != nil && !isConnectionLost && !isConnecting }
 
 
@@ -100,7 +139,7 @@ final class BrowserModel {
     var tables: [TableInfo] = []
     /// The database (MySQL) or schema (PostgreSQL) shown in the sidebar. It's
     /// also the session's default, so unqualified table names resolve in it.
-    private(set) var selectedDatabase: String?
+    private(set) var selectedDatabase: String? { didSet { sessionDidChange?() } }
     /// The session's default database, as far as we know (`nil` until
     /// queried after connecting).
     @ObservationIgnored private var sessionDatabase: String?
@@ -207,6 +246,7 @@ final class BrowserModel {
         do {
             let saved = try queryLibrary.saveSnippet(id: id, name: name, sql: sql)
             libraryRevision += 1
+            editorBaselineSQL = sql
             libraryFeedback = id == nil ? "Snippet saved." : "Snippet updated from the editor."
             return saved
         } catch {
@@ -235,7 +275,7 @@ final class BrowserModel {
     /// Code that replaces it calls ``setSQL(_:)``. Saved as the connection's
     /// draft shortly after it changes.
     @ObservationIgnored var sql = "" {
-        didSet { if sql != oldValue { scheduleDraftSave() } }
+        didSet { if sql != oldValue { scheduleDraftSave(); sessionDidChange?() } }
     }
     /// The connection whose draft the editor holds (its title).
     @ObservationIgnored private var draftKey: String?
@@ -304,6 +344,7 @@ final class BrowserModel {
     }
 
     private func stateChanged() {
+        sessionDidChange?()
         guard !notificationPending else { return }
         notificationPending = true
         Task { @MainActor in
@@ -422,7 +463,8 @@ final class BrowserModel {
         do {
             let source = try connectionDraft.source()
             connectionFeedback = ""
-            connect(source, title: connectionDraft.name.isEmpty ? connectionDraft.driver : connectionDraft.name, safety: connectionDraft.safety)
+            let favorite = profiles.first { ConnectionDraft(profile: $0) == connectionDraft }?.id
+            connect(source, title: connectionDraft.name.isEmpty ? connectionDraft.driver : connectionDraft.name, safety: connectionDraft.safety, favoriteID: favorite)
         } catch {
             connectionFeedback = "Connection failed: \(error)"
         }
@@ -431,7 +473,7 @@ final class BrowserModel {
     func connectSelectedProfile() {
         guard let selectedProfileID else { return }
         guard let profile = profiles.first(where: { $0.id == selectedProfileID }) else { return }
-        connect(.profile(profile.url.path), title: profile.id, safety: profile.safety)
+        connect(.profile(profile.url.path), title: profile.id, safety: profile.safety, favoriteID: profile.id)
     }
 
     func connectDirect() {
@@ -443,9 +485,10 @@ final class BrowserModel {
         connect(.direct(driver: driver, uri: uri), title: driver ?? "connection")
     }
 
-    private func connect(_ source: ConnectionSource, title: String, safety: FavoriteSafety = .init(), reconnecting: Bool = false) {
+    private func connect(_ source: ConnectionSource, title: String, safety: FavoriteSafety = .init(), favoriteID: String? = nil, reconnecting: Bool = false) {
         guard !isConnecting else { return }
         pendingQuery = nil
+        restorableProfileID = favoriteID
         sessionRevision += 1
         loadsInFlight = 0
         let revision = sessionRevision
@@ -483,14 +526,17 @@ final class BrowserModel {
                     statusMessage = reconnecting
                         ? "Reconnected. Run your query when ready."
                         : (vendor.isEmpty ? "Connected" : "Connected to \(vendor)")
-                    if !reconnecting {
+                    if !reconnecting && pendingSessionRestore != nil { draftKey = title }
+                    if !reconnecting && pendingSessionRestore == nil {
                         // Keep the previous connection's draft, then open this one's.
                         saveDraft()
                         draftKey = title
                         if !runOnConnect, let draft = queryLibrary.draft(for: title) {
                             setSQL(draft)
+                            editorBaselineSQL = sql
                         } else if sql.isEmpty {
                             setSQL("SELECT 1")
+                            editorBaselineSQL = sql
                         }
                     }
                     refreshTables()
@@ -509,7 +555,7 @@ final class BrowserModel {
 
     func reconnect() {
         guard isConnectionLost, let reconnectSource, !isConnecting else { return }
-        connect(reconnectSource, title: connectionTitle, safety: connectionSafety, reconnecting: true)
+        connect(reconnectSource, title: connectionTitle, safety: connectionSafety, favoriteID: restorableProfileID, reconnecting: true)
     }
 
     private func startConnectionMonitor() {
@@ -548,6 +594,8 @@ final class BrowserModel {
     func disconnect() {
         saveDraft()
         draftKey = nil
+        restorableProfileID = nil
+        pendingSessionRestore = nil
         pendingQuery = nil
         sessionRevision += 1
         loadsInFlight = 0
@@ -686,7 +734,9 @@ final class BrowserModel {
                         $0.namespace == $1.namespace ? $0.name < $1.name : $0.namespace < $1.namespace
                     }
                     if let current { sessionDatabase = current }
-                    if let preferred = preferredDatabase, databases.contains(preferred) {
+                    if let restored = pendingSessionRestore?.database, databases.contains(restored) {
+                        selectedDatabase = restored
+                    } else if let preferred = preferredDatabase, databases.contains(preferred) {
                         selectedDatabase = preferred
                     } else if selectedDatabase.map({ !databases.contains($0) }) ?? true {
                         selectedDatabase = sessionDatabase.flatMap { databases.contains($0) ? $0 : nil }
@@ -694,6 +744,15 @@ final class BrowserModel {
                     }
                     preferredDatabase = nil
                     applySelectedDatabase()
+                    if let restored = pendingSessionRestore {
+                        pendingSessionRestore = nil
+                        selectedTab = BrowserTab(rawValue: restored.pane) ?? .query
+                        if let saved = restored.table,
+                           let table = self.tables.first(where: { $0.catalog == saved.catalog && $0.schema == saved.schema && $0.name == saved.name }) {
+                            selectTable(table.id)
+                        }
+                        sessionDidChange?()
+                    }
                 case .failure(let error):
                     handleConnectionFailure(error, from: connection)
                     if !isConnectionLost { errorMessage = "Could not list tables: \(error)" }
@@ -1112,6 +1171,7 @@ final class BrowserModel {
                 queryPane.show(shown)
                 let completed = QueryStatus.completed(shown, elapsed: elapsed, statements: statements.count, maxRows: runMaxRows)
                 queryStatus = completed
+                if sql == sourceSQL { editorBaselineSQL = sql }
                 statusMessage = completed.text
             }
         }

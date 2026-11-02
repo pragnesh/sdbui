@@ -61,7 +61,7 @@ struct ConnectionPages: View {
             backend.insert(node.widget.into(), into: widget, at: 0)
             pages.attachedID = selectedID
         }
-        let presentation = ConnectionPageChildren.Presentation(environment)
+        let presentation = ConnectionPageChildren.Presentation(environment, model: tab.model)
         let concrete = node.concreteNode(for: Backend.self)
         let result: ViewLayoutResult
         if !pages.needsCommit, node.lastProposedSize == ProposedViewSize(size),
@@ -109,12 +109,18 @@ private final class ConnectionPageChildren: ViewGraphNodeChildren {
         let font: Font.Resolved
         let scale: Double
         let enabled: Bool
+        let sidebarWidth: Int
+        let connection: ObjectIdentifier?
+        let connecting: Bool
 
-        @MainActor init(_ environment: EnvironmentValues) {
+        @MainActor init(_ environment: EnvironmentValues, model: BrowserModel) {
             colorScheme = environment.colorScheme
             font = environment.resolvedFont
             scale = environment.windowScaleFactor
             enabled = environment.isEnabled
+            sidebarWidth = model.sidebarWidth
+            connection = model.connection.map { ObjectIdentifier($0) }
+            connecting = model.isConnecting
         }
     }
 

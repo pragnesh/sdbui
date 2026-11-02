@@ -34,10 +34,12 @@ final class ConnectionWorkspaceTests: XCTestCase {
         XCTAssertEqual(first.model.selectedTab, .structure)
         XCTAssertEqual(first.model.maxRows, 10_000)
         workspace.close(secondID) // Closing a background tab does not select another.
+        workspace.confirmClose()
         XCTAssertEqual(workspace.selectedID, first.id)
         workspace.select(secondID) // Stale IDs are ignored.
         XCTAssertEqual(workspace.selectedID, first.id)
         workspace.close(first.id)
+        workspace.confirmClose()
         XCTAssertEqual(workspace.tabs.count, 1)
         XCTAssertNotEqual(workspace.selectedID, first.id)
         XCTAssertEqual(workspace.selectedTab.model.sql, "")
@@ -55,6 +57,7 @@ final class ConnectionWorkspaceTests: XCTestCase {
         first.model.setSQL("SELECT 'visible'")
         try await waitUntil { notifications == 2 }
         workspace.close(first.id)
+        workspace.confirmClose()
         first.model.setSQL("SELECT 'closed'")
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(notifications, 2)
@@ -67,8 +70,10 @@ final class ConnectionWorkspaceTests: XCTestCase {
         let third = workspace.addTab()
         workspace.select(second)
         workspace.close(second)
+        workspace.confirmClose()
         XCTAssertEqual(workspace.selectedID, third)
         workspace.close(third)
+        workspace.confirmClose()
         XCTAssertEqual(workspace.selectedID, first)
     }
 
@@ -107,6 +112,7 @@ final class ConnectionWorkspaceTests: XCTestCase {
         second.model.runQuery()
         try await waitUntil { second.model.loadsInFlight > 0 }
         workspace.close(secondID)
+        workspace.confirmClose()
         XCTAssertNil(second.model.connection)
         XCTAssertTrue(first.model.canRun)
         first.model.setSQL("SELECT value FROM tab_state")

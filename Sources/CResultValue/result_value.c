@@ -413,3 +413,61 @@ void sdbui_grid_font_size(void *grid, int size) {
     g_free(css);
     font->size = size;
 }
+
+typedef struct { void *context; SDBUILayoutChange changed; SDBUIValueDestroy destroy; int width, height; } SessionLayout;
+static void free_session_layout(gpointer data) {
+    SessionLayout *layout = data;
+    if (layout->destroy) layout->destroy(layout->context);
+    g_free(layout);
+}
+static void capture_window_layout(GtkWidget *root, SessionLayout *layout, int final) {
+    GtkRoot *window = gtk_widget_get_root(root);
+    if (GTK_IS_WINDOW(window) && !gtk_window_is_maximized(GTK_WINDOW(window)) && !gtk_window_is_fullscreen(GTK_WINDOW(window))) {
+        int width = gtk_widget_get_width(GTK_WIDGET(window)), height = gtk_widget_get_height(GTK_WIDGET(window));
+        if (width >= 640 && height >= 400 && (final || width != layout->width || height != layout->height)) {
+            layout->width = width; layout->height = height;
+            layout->changed(layout->context, width, height, final);
+            return;
+        }
+    }
+    if (final) layout->changed(layout->context, layout->width, layout->height, 1);
+}
+static gboolean session_window_tick(GtkWidget *root, GdkFrameClock *clock, gpointer data) {
+    (void)clock;
+    capture_window_layout(root, data, 0);
+    return G_SOURCE_CONTINUE;
+}
+static void session_window_unmap(GtkWidget *root, gpointer data) { capture_window_layout(root, data, 1); }
+void sdbui_session_window(void *root, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy) {
+    if (g_object_get_data(G_OBJECT(root), "sdbui-session-window")) { if (destroy) destroy(context); return; }
+    SessionLayout *layout = g_new0(SessionLayout, 1);
+    layout->context = context; layout->changed = changed; layout->destroy = destroy;
+    g_object_set_data_full(G_OBJECT(root), "sdbui-session-window", layout, free_session_layout);
+    gtk_widget_add_tick_callback(GTK_WIDGET(root), session_window_tick, layout, NULL);
+    g_signal_connect(root, "unmap", G_CALLBACK(session_window_unmap), layout);
+}
+static void sidebar_position(GtkPaned *paned, GParamSpec *property, gpointer data) {
+    (void)property;
+    SessionLayout *layout = data;
+    if (gtk_widget_get_mapped(GTK_WIDGET(paned))) {
+        int width = gtk_paned_get_position(paned);
+        if (width >= 180 && width != layout->width) {
+            layout->width = width;
+            layout->changed(layout->context, width, 0, 0);
+        }
+    }
+}
+static void sidebar_map(GtkWidget *paned, gpointer data) {
+    SessionLayout *layout = data;
+    gtk_paned_set_position(GTK_PANED(paned), layout->width);
+}
+void sdbui_session_sidebar(void *paned, int width, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy) {
+    if (!GTK_IS_PANED(paned) || g_object_get_data(G_OBJECT(paned), "sdbui-session-sidebar")) { if (destroy) destroy(context); return; }
+    SessionLayout *layout = g_new0(SessionLayout, 1);
+    layout->context = context; layout->changed = changed; layout->destroy = destroy;
+    layout->width = CLAMP(width, 180, 4000);
+    g_object_set_data_full(G_OBJECT(paned), "sdbui-session-sidebar", layout, free_session_layout);
+    gtk_paned_set_position(GTK_PANED(paned), layout->width);
+    g_signal_connect(paned, "notify::position", G_CALLBACK(sidebar_position), layout);
+    g_signal_connect(paned, "map", G_CALLBACK(sidebar_map), layout);
+}

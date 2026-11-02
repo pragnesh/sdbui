@@ -26,7 +26,7 @@ struct DisconnectedView: View {
             }
             .padding()
         }
-        .keepingSidebarWidthOnResize()
+        .keepingSidebarWidthOnResize(model: model)
     }
 }
 

@@ -37,7 +37,7 @@ struct MainWindow: View {
                     DetailArea(model: model)
                 }
             }
-            .keepingSidebarWidthOnResize()
+            .keepingSidebarWidthOnResize(model: model)
         }
     }
 }

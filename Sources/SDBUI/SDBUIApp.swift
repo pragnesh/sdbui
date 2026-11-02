@@ -8,7 +8,7 @@ import SwiftCrossUI
 
 @main
 struct SDBUIApp: App {
-    @State var workspace = ConnectionWorkspace()
+    @State var workspace = ConnectionWorkspace(sessionStore: SessionStore())
 
     #if canImport(GtkBackend)
         /// GTK hands a second launch with the same ID to the running instance;
@@ -25,7 +25,7 @@ struct SDBUIApp: App {
             ConnectionWorkspaceView(workspace: workspace)
                 .onAppear { workspace.launch() }
         }
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: workspace.windowWidth, height: workspace.windowHeight)
     }
 }
 
@@ -46,11 +46,9 @@ extension NavigationSplitView {
     /// Give extra window width to the detail pane instead of sharing it with
     /// the sidebar (GTK's default for a `Paned`). The divider stays draggable.
     @ViewBuilder
-    func keepingSidebarWidthOnResize() -> some View {
+    func keepingSidebarWidthOnResize(model: BrowserModel) -> some View {
         #if canImport(GtkBackend)
-            inspect { paned in
-                paned.resizeStartChild = false
-            }
+            persistingSidebar(model)
         #else
             self
         #endif

@@ -17,4 +17,7 @@ int32_t sdbui_shortcut_command(uint32_t keyval, uint32_t modifiers);
 void sdbui_shortcuts_install(void *root, void *context, SDBUIShortcutAction action, SDBUIValueDestroy destroy);
 void sdbui_grid_font_size(void *grid, int size);
 void sdbui_shortcut_target(void *widget, const char *name);
+typedef void (*SDBUILayoutChange)(void *context, int width, int height, int final);
+void sdbui_session_window(void *root, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy);
+void sdbui_session_sidebar(void *paned, int width, void *context, SDBUILayoutChange changed, SDBUIValueDestroy destroy);
 #endif

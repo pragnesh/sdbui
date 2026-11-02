@@ -150,9 +150,52 @@ static void test_shortcuts(void) {
     g_object_unref(controller); g_object_unref(controllers); g_object_unref(root);
 }
 
+typedef struct { int width, height, final, destroyed; } LayoutTest;
+static void layout_changed(void *context, int width, int height, int final) {
+    LayoutTest *state = context;
+    state->width = width; state->height = height;
+    state->final += final;
+}
+static void layout_destroy(void *context) { ((LayoutTest *)context)->destroyed++; }
+static gboolean finish_layout_wait(gpointer data) { g_main_loop_quit(data); return G_SOURCE_REMOVE; }
+static void settle_layout(void) {
+    GMainLoop *wait = g_main_loop_new(NULL, FALSE);
+    g_timeout_add(500, finish_layout_wait, wait);
+    g_main_loop_run(wait); g_main_loop_unref(wait);
+}
+static void test_session_layout(void) {
+    LayoutTest window_state = {0}, sidebar_state = {0};
+    GtkWidget *window = gtk_window_new();
+    GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
+    gtk_paned_set_start_child(GTK_PANED(paned), gtk_label_new("Sidebar"));
+    gtk_paned_set_end_child(GTK_PANED(paned), gtk_label_new("Editor"));
+    gtk_window_set_child(GTK_WINDOW(window), paned);
+    gtk_window_set_default_size(GTK_WINDOW(window), 900, 650);
+    sdbui_session_window(paned, &window_state, layout_changed, layout_destroy);
+    sdbui_session_sidebar(paned, 360, &sidebar_state, layout_changed, layout_destroy);
+    gtk_window_present(GTK_WINDOW(window));
+    settle_layout();
+    g_assert_cmpint(gtk_paned_get_position(GTK_PANED(paned)), ==, 360);
+    g_assert_cmpint(window_state.width, ==, 900);
+    g_assert_cmpint(window_state.height, ==, 650);
+    gtk_window_set_default_size(GTK_WINDOW(window), 1050, 700);
+    gtk_paned_set_position(GTK_PANED(paned), 420);
+    settle_layout();
+    g_assert_cmpint(sidebar_state.width, ==, 420);
+    g_assert_cmpint(window_state.width, ==, 1050);
+    g_assert_cmpint(window_state.height, ==, 700);
+    gtk_widget_set_visible(window, FALSE);
+    g_assert_cmpint(window_state.final, ==, 1);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_assert_cmpint(window_state.destroyed, ==, 1);
+    g_assert_cmpint(sidebar_state.destroyed, ==, 1);
+}
+
 int main(void) {
     gtk_init();
     test_shortcuts();
+    test_session_layout();
     GtkWidget *editor = gtk_text_view_new();
     g_object_ref_sink(editor);
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor));
@@ -194,6 +237,6 @@ int main(void) {
     g_main_loop_run(loop);
     gtk_window_destroy(GTK_WINDOW(window));
     g_main_loop_unref(loop);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence\n");
     return 0;
 }
