@@ -1,5 +1,5 @@
 {
-  "originHash" : "9fcbfd5f36cde6e3396724dc0d5bbc66db143ab26bff3c247eccaa77861c8165",
+  "originHash" : "84692cb38c113c6fcec6d03c1dca80c101e063bd7a863ee7f216398b8730a64b",
   "pins" : [
     {
       "identity" : "androidkit",
@@ -70,7 +70,7 @@
       "location" : "https://github.com/pragnesh/swift-cross-ui",
       "state" : {
         "branch" : "sdbui-data-grid",
-        "revision" : "60b9ca1737403cbeb20525b695cb43f8bc41a0f9"
+        "revision" : "89c12f7161ced74c5d9b1c8fd6fb3d36c8abb61e"
       }
     },
     {
