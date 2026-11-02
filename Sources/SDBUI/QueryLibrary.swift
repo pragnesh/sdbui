@@ -103,6 +103,7 @@ final class QueryLibraryStore: @unchecked Sendable {
                 try execute("CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, sql TEXT NOT NULL, connection TEXT NOT NULL, date REAL NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS snippets (id TEXT PRIMARY KEY, name TEXT NOT NULL, sql TEXT NOT NULL, updated REAL NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS library_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS drafts (connection TEXT PRIMARY KEY, sql TEXT NOT NULL, updated REAL NOT NULL)")
                 if try scalar("SELECT count(*) FROM library_meta WHERE key='history_count'") == 0 {
                     try execute("INSERT INTO library_meta VALUES ('history_count', (SELECT count(*) FROM history))")
                 }
@@ -233,6 +234,24 @@ final class QueryLibraryStore: @unchecked Sendable {
     func deleteSnippet(_ id: UUID) throws {
         lock.lock(); defer { lock.unlock() }; try writable()
         try execute("DELETE FROM snippets WHERE id=?", [id.uuidString])
+    }
+
+    /// The editor text last left in `connection`, restored when it's opened again.
+    func draft(for connection: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard loadError == nil, let statement = try? prepare("SELECT sql FROM drafts WHERE connection=?") else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bind(connection, to: statement, at: 1)
+        return sqlite3_step(statement) == SQLITE_ROW ? text(statement, 0) : nil
+    }
+    /// Saving blank text forgets the draft.
+    func saveDraft(_ sql: String, for connection: String) throws {
+        lock.lock(); defer { lock.unlock() }; try writable()
+        if sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try execute("DELETE FROM drafts WHERE connection=?", [connection])
+        } else {
+            try execute("INSERT OR REPLACE INTO drafts VALUES (?,?,?)", [connection, sql, String(Date().timeIntervalSince1970)])
+        }
     }
 
     private func trimHistory() throws {

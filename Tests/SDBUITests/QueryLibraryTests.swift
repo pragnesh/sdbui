@@ -49,6 +49,23 @@ final class QueryLibraryStoreTests: XCTestCase {
         XCTAssertThrowsError(try restored.saveSnippet(name: "Empty", sql: " \n"))
     }
 
+    func testDraftsArePerConnectionPersistedAndForgottenWhenBlank() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("library.sqlite3")
+        let store = QueryLibraryStore(url: url)
+        try store.saveDraft("SELECT 'a'\n-- draft", for: "Work/A")
+        try store.saveDraft("SELECT 'b'", for: "B")
+        try store.saveDraft("SELECT 'a2'", for: "Work/A")
+        let restored = QueryLibraryStore(url: url)
+        XCTAssertEqual(restored.draft(for: "Work/A"), "SELECT 'a2'")
+        XCTAssertEqual(restored.draft(for: "B"), "SELECT 'b'")
+        XCTAssertNil(restored.draft(for: "C"))
+        XCTAssertTrue(restored.history.isEmpty)
+        try restored.saveDraft("  \n", for: "B")
+        XCTAssertNil(QueryLibraryStore(url: url).draft(for: "B"))
+    }
+
     func testCorruptOrFutureFilesArePreserved() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

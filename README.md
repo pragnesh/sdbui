@@ -50,13 +50,15 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
 - **Structure:** columns (type, nullability, key, default, extra) and indexes
 - **Table Info:** engine, row estimate, sizes, collation, … and the
   `CREATE TABLE` statement (MySQL)
-- **Query:** SQL editor with results below. Clicking a table puts
-  ``SELECT * FROM `db`.`table` LIMIT 1000`` in the editor and runs it, with a
-  column / operator / value filter bar and Previous/Next paging; filtering,
-  paging and header sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`,
-  `ORDER BY`). Ctrl+Enter runs the selection or the statement at the cursor,
+- **Query:** SQL editor with results below. Clicking a table only selects
+  it; **Show rows** runs ``SELECT * FROM `db`.`table` LIMIT 1000`` and shows
+  that SQL above the rows, never in the editor, with a column / operator /
+  value filter bar and Previous/Next paging; filtering, paging and header
+  sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`, `ORDER BY`).
+  Ctrl+Enter runs the selection or the statement at the cursor,
   Run All runs every statement; Cancel (`AdbcConnectionCancel`), row limit,
-  CSV export
+  CSV export. The editor's text is saved as a draft per connection (by
+  favorite name) as you type and restored the next time you connect to it
 
 Results are shown in a virtualized grid (GTK `GtkColumnView`): only the
 visible cells are formatted and drawn, so large results scroll smoothly.
@@ -87,7 +89,7 @@ Also:
   Snippets support named save, rename/update from the editor, load and delete.
   Loading history or a snippet does not execute SQL.
   History is paged 100 queries at a time, with cancellable background search.
-  Both are stored in `~/.local/share/sdbui/query-library.sqlite3` on Linux
+  Both, and editor drafts, are stored in `~/.local/share/sdbui/query-library.sqlite3` on Linux
   (`XDG_DATA_HOME` is respected), or `~/Library/Application Support/sdbui/` on
   macOS, with owner-only file permissions. SQL is stored in plain text and may
   include sensitive literals; history can be cleared independently of snippets.

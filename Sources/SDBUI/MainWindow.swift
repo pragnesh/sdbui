@@ -333,6 +333,37 @@ struct PaneGrid: View {
 
 // MARK: - Table browsing controls (shown in the Query tab)
 
+/// Show rows for the selected table, and while browsing, the SELECT behind
+/// the rows. Browsing leaves the SQL editor alone.
+struct BrowseBar: View {
+    var model: BrowserModel
+    @State private var revision = 0
+
+    var body: some View {
+        let _ = revision
+        let _ = model.watch(
+            "browse-bar",
+            of: { [AnyHashable(model.isBrowsing), model.selectedTableID, model.browseSQL, model.canRun] }
+        ) {
+            revision &+= 1
+        }
+        if let table = model.selectedTable {
+            HStack(spacing: 8) {
+                if !model.isBrowsing {
+                    Button("Show rows") { model.browseSelectedTable() }
+                        .disabled(!model.canRun)
+                        .fixedSize()
+                }
+                Text(model.isBrowsing ? model.browseSQL : "Rows of \(table.name)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.gray)
+                    .lineLimit(1)
+                Spacer()
+            }
+        }
+    }
+}
+
 /// Sequel Ace's content filter (column, operator, value), shown while the
 /// Query tab is browsing a table.
 struct FilterBar: View {

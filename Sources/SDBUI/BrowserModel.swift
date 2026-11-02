@@ -113,6 +113,9 @@ final class BrowserModel {
         }
     }
 
+    /// The SELECT behind the browsed rows, shown above them. Browsing never
+    /// touches the editor.
+    @ObservationIgnored private(set) var browseSQL = "" { didSet { stateChanged() } }
     @ObservationIgnored private(set) var contentOffset = 0 { didSet { stateChanged() } }
     @ObservationIgnored private(set) var contentHasMore = false { didSet { stateChanged() } }
     @ObservationIgnored private(set) var contentFilter: SQLDialect.Filter? {
@@ -193,8 +196,14 @@ final class BrowserModel {
     // MARK: Query tab
 
     /// The editor's text. Not observed: the GTK text view owns the live text.
-    /// Code that replaces it calls ``setSQL(_:)``.
-    @ObservationIgnored var sql = ""
+    /// Code that replaces it calls ``setSQL(_:)``. Saved as the connection's
+    /// draft shortly after it changes.
+    @ObservationIgnored var sql = "" {
+        didSet { if sql != oldValue { scheduleDraftSave() } }
+    }
+    /// The connection whose draft the editor holds (its title).
+    @ObservationIgnored private var draftKey: String?
+    @ObservationIgnored private var draftSaveTask: Task<Void, Never>?
     /// Bumped by ``setSQL(_:)`` so the editor picks up programmatic changes.
     @ObservationIgnored private(set) var sqlRevision = 0 { didSet { stateChanged() } }
     @ObservationIgnored private(set) var isRunning = false { didSet { stateChanged() } }
@@ -431,7 +440,16 @@ final class BrowserModel {
                     statusMessage = reconnecting
                         ? "Reconnected. Run your query when ready."
                         : (vendor.isEmpty ? "Connected" : "Connected to \(vendor)")
-                    if !reconnecting && sql.isEmpty { setSQL("SELECT 1") }
+                    if !reconnecting {
+                        // Keep the previous connection's draft, then open this one's.
+                        saveDraft()
+                        draftKey = title
+                        if !runOnConnect, let draft = queryLibrary.draft(for: title) {
+                            setSQL(draft)
+                        } else if sql.isEmpty {
+                            setSQL("SELECT 1")
+                        }
+                    }
                     refreshTables()
                     startConnectionMonitor()
                     if !reconnecting && runOnConnect {
@@ -483,6 +501,8 @@ final class BrowserModel {
     }
 
     func disconnect() {
+        saveDraft()
+        draftKey = nil
         sessionRevision += 1
         loadsInFlight = 0
         connectionMonitor?.cancel()
@@ -600,6 +620,13 @@ final class BrowserModel {
         guard canUseConnection else { return }
         guard id != selectedTableID else { return }
         selectedTableID = id
+        if isBrowsing {
+            // The rows belong to the previous table.
+            isBrowsing = false
+            browseSQL = ""
+            contentHasMore = false
+            queryPane.show(nil)
+        }
         loadedTables = [:]
         contentOffset = 0
         contentFilter = nil
@@ -627,8 +654,12 @@ final class BrowserModel {
     /// Reload what the current tab shows.
     func refreshCurrentTab() {
         guard canUseConnection else { return }
-        if selectedTab == .query && !isBrowsing {
-            runQuery()
+        if selectedTab == .query {
+            if isBrowsing, let table = selectedTable {
+                loadContent(table)
+            } else {
+                runQuery()
+            }
             return
         }
         loadedTables[selectedTab] = nil
@@ -636,10 +667,12 @@ final class BrowserModel {
     }
 
     private func loadCurrentTab() {
+        // The Query tab shows a table's rows only on request (Show rows).
+        guard selectedTab != .query else { return }
         guard canUseConnection, let table = selectedTable, loadedTables[selectedTab] != table.id else { return }
         loadedTables[selectedTab] = table.id
         switch selectedTab {
-            case .query: loadContent(table)
+            case .query: break
             case .structure: loadStructure(table)
             case .info: loadInfo(table)
         }
@@ -678,8 +711,18 @@ final class BrowserModel {
 
     // MARK: Browsing a table in the Query tab
 
-    /// Shows one page of `table` in the Query tab: the SQL in the editor and
-    /// its rows below.
+    /// Shows the first page of the selected table's rows in the Query tab.
+    func browseSelectedTable() {
+        guard canUseConnection, let table = selectedTable else { return }
+        contentOffset = 0
+        contentFilter = nil
+        contentSort = nil
+        contentColumns = []
+        filterColumn = nil
+        loadContent(table)
+    }
+
+    /// Shows one page of `table` in the Query tab, with its SQL above the rows.
     private func loadContent(_ table: TableInfo) {
         guard canUseConnection else { return }
         let revision = sessionRevision
@@ -695,7 +738,7 @@ final class BrowserModel {
         let displayedSQL = dialect.browseSQL(
             table, filter: contentFilter, orderBy: orderBy, limit: pageSize,
             offset: contentOffset)
-        setSQL(displayedSQL)
+        browseSQL = displayedSQL
         isBrowsing = true
         isRunning = true
         errorMessage = nil
@@ -851,6 +894,28 @@ final class BrowserModel {
     func setSQL(_ text: String) {
         sql = text
         sqlRevision += 1
+    }
+
+    private func scheduleDraftSave() {
+        guard draftKey != nil else { return }
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveDraft()
+        }
+    }
+
+    /// Stores the editor's text as the current connection's draft.
+    func saveDraft() {
+        draftSaveTask?.cancel()
+        draftSaveTask = nil
+        guard let draftKey else { return }
+        do {
+            try queryLibrary.saveDraft(sql, for: draftKey)
+        } catch {
+            libraryFeedback = "Draft could not be saved: \(error)"
+        }
     }
 
     /// Runs every statement in the editor (the Run button).
