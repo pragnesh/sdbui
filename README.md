@@ -106,7 +106,7 @@ Numbers are right-aligned and headers show each column's type. Click a header
 to sort; select rows with Shift/Ctrl-click and press Ctrl+C, or right-click a
 cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
-For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current single-column filter, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
+For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current filter, including grouped conditions, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
 
 The SQL editor highlights keywords, strings, quoted identifiers, numbers and
 comments in light and dark themes. Highlighting preserves the SQL text,
@@ -133,6 +133,39 @@ single selected read-only statement, without replacing editor SQL. It supports
 PostgreSQL and MySQL and never adds `ANALYZE`; explaining SQL does not mark the
 draft as successfully executed. PostgreSQL plan queries use the driver's
 non-COPY result path. Manually running an `EXPLAIN` statement also uses that path.
+
+**Advanced filters** combines conditions into groups. Choose **AND** or **OR**
+within each group and between groups, then **Apply groups**. For example,
+`(status = 'open' AND priority > 2) OR owner IS NULL`. Filters stay attached to
+their query tab and apply to server-side sorting, paging and **Count exact**.
+The simple Filter button and cell-value menu replace the current filter.
+
+**Count exact** counts all rows matching the applied filter, not just the loaded
+page. Exact counts are marked explicitly, cached with the query tab, and
+invalidated by filter changes, refresh and committed row changes. Large counts
+can be cancelled with **Cancel** or **Esc**. Estimates remain available for
+unfiltered tables without requiring a full count.
+
+For PostgreSQL and transactional MySQL base tables, **Insert row** opens a value
+form. Right-click a browsed cell for **Edit row…** or **Delete row…**; these actions
+require a primary key, including composite keys. Value, NULL and DEFAULT are
+separate choices. Generated, binary and NUL-containing fields remain read-only. Arbitrary query
+results, views and read-only favorites cannot be edited this way.
+
+Choose **Review change** to inspect the generated SQL, then explicitly confirm
+it. Updates and deletes lock and re-read the primary-key row, compare its
+loaded values, and require exactly one affected row. Constraint failures and
+stale rows abort the change; the transaction is rolled back on failure when
+possible. The app requires confirmed autocommit and refuses to take over a
+manual transaction. Finish that transaction first; reconnect after changing
+autocommit settings or running transaction-controlling procedures. Editor SQL
+is preserved, and successful changes refresh the browsed result.
+
+**Table Info** includes incoming/outgoing foreign-key relations, user triggers
+and view definitions. Catalog visibility depends on database privileges.
+**Pin selected table** persists a star beside a table and sorts pinned matches
+first within the selected namespace, while retaining fuzzy search. Pins are
+scoped to the favorite or direct server/database endpoint.
 
 Right-click a **column header** to sort ascending or descending, copy its name
 or all loaded values, hide it, or auto-fit its width from a sample of loaded

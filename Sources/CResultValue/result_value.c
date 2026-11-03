@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+static GtkWidget *find_text_view(GtkWidget *widget);
+static GtkWidget *find_shortcut_target(GtkWidget *widget, const char *name);
+
 typedef struct {
     void *context;
     SDBUIValuePreview preview;
@@ -11,6 +14,7 @@ typedef struct {
     SDBUIFilterPrepare filter_prepare;
     SDBUIFilterApply filter_apply;
     SDBUIValueDestroy filter_destroy;
+    gboolean editable;
     SDBUIHeaderPrepare header_prepare;
     SDBUIHeaderApply header_apply;
     SDBUIValueDestroy header_destroy;
@@ -65,16 +69,44 @@ static void double_clicked(GtkGestureClick *gesture, gint presses, gdouble x, gd
     }
 }
 
-typedef struct { void *snapshot; SDBUIFilterApply apply; SDBUIValueDestroy destroy; } FilterAction;
+typedef struct { void *snapshot; SDBUIFilterApply apply; SDBUIValueDestroy destroy; GtkWidget *popover; } FilterAction;
 static void filter_action_free(gpointer data) {
     FilterAction *action = data;
     if (action->destroy) action->destroy(action->snapshot);
     g_free(action);
 }
+typedef struct { GSimpleAction *action; GtkRoot *root; int command; } DeferredRowAction;
+static gboolean apply_row_action(gpointer data) {
+    DeferredRowAction *request = data;
+    FilterAction *filter = g_object_get_data(G_OBJECT(request->action), "sdbui-cell-filter");
+    if (request->root) {
+        GtkWidget *target = find_shortcut_target(GTK_WIDGET(request->root), "editor");
+        GtkWidget *editor = target ? find_text_view(target) : NULL;
+        if (editor) gtk_widget_grab_focus(editor);
+        else gtk_root_set_focus(request->root, NULL);
+    }
+    if (filter && filter->apply) filter->apply(filter->snapshot, request->command);
+    return G_SOURCE_REMOVE;
+}
+static void free_row_action(gpointer data) {
+    DeferredRowAction *request = data;
+    g_object_unref(request->action);
+    if (request->root) g_object_unref(request->root);
+    g_free(request);
+}
 static void filter_action_activated(GSimpleAction *action, GVariant *parameter, gpointer data) {
-    (void)action;
     FilterAction *filter = data;
-    if (filter->apply) filter->apply(filter->snapshot, g_variant_get_int32(parameter));
+    int command = g_variant_get_int32(parameter);
+    if (command == 3 || command == 4) {
+        /* Let the backend's closed-menu idle unparent the popup before Swift
+         * replaces its cell/grid with the row editor. Retain the snapshot. */
+        DeferredRowAction *request = g_new0(DeferredRowAction, 1);
+        request->action = g_object_ref(action); request->command = command;
+        GtkRoot *root = gtk_widget_get_root(filter->popover);
+        if (root) { request->root = g_object_ref(root); gtk_root_set_focus(root, NULL); }
+        gtk_popover_popdown(GTK_POPOVER(filter->popover));
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, apply_row_action, request, free_row_action);
+    } else if (filter->apply) filter->apply(filter->snapshot, command);
 }
 static gboolean release_filter_menu(gpointer data) {
     GtkWidget *popover = data;
@@ -100,7 +132,7 @@ static void append_cell_filters(GtkWidget *cell, GtkWidget *popover) {
     void *snapshot = source->filter_prepare(source->context, position - 1, column->column);
     if (!snapshot) return;
     FilterAction *filter = g_new0(FilterAction, 1);
-    filter->snapshot = snapshot; filter->apply = source->filter_apply; filter->destroy = source->filter_destroy;
+    filter->snapshot = snapshot; filter->apply = source->filter_apply; filter->destroy = source->filter_destroy; filter->popover = popover;
     GSimpleActionGroup *group = g_simple_action_group_new();
     GSimpleAction *action = g_simple_action_new("apply", G_VARIANT_TYPE_INT32);
     g_signal_connect(action, "activate", G_CALLBACK(filter_action_activated), filter);
@@ -116,6 +148,10 @@ static void append_cell_filters(GtkWidget *cell, GtkWidget *popover) {
     g_menu_append(commands, "!=", "cellfilter.apply(1)");
     g_menu_append(commands, "IS NULL", "cellfilter.apply(2)");
     g_menu_append_submenu(combined, "Filter by this value", G_MENU_MODEL(commands));
+    if (source->editable) {
+        g_menu_append(combined, "Edit row…", "cellfilter.apply(3)");
+        g_menu_append(combined, "Delete row…", "cellfilter.apply(4)");
+    }
     g_signal_connect(popover, "closed", G_CALLBACK(filter_menu_closed), NULL);
     gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), G_MENU_MODEL(combined));
     g_object_set_data(G_OBJECT(popover), "sdbui-cell-filter", GINT_TO_POINTER(1));
@@ -243,6 +279,11 @@ void sdbui_value_install(void *widget, void *context, SDBUIValuePreview preview,
         g_object_set_data(G_OBJECT(grid), "sdbui-value-observing", GINT_TO_POINTER(1));
     }
     install_columns(grid);
+}
+
+void sdbui_value_editing(void *grid, int enabled) {
+    ValueSource *source = g_object_get_data(G_OBJECT(grid), "sdbui-values");
+    if (source) source->editable = enabled != 0;
 }
 
 void sdbui_value_filters(void *grid, SDBUIFilterPrepare prepare, SDBUIFilterApply apply, SDBUIValueDestroy destroy) {

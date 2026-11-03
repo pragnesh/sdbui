@@ -39,6 +39,7 @@ static void activate(void *context, void *widget, uint32_t row, uint32_t column)
     sdbui_value_show(widget, "Value regression test", raw, strlen(raw), pretty, 0);
 }
 static guint filter_prepared, filter_applied, filter_destroyed;
+static int expected_filter_command = 1;
 static gboolean filter_enabled = TRUE;
 static void *prepare_cell_filter(void *context, uint32_t row, uint32_t column) {
     (void)context;
@@ -50,7 +51,7 @@ static void *prepare_cell_filter(void *context, uint32_t row, uint32_t column) {
 }
 static void apply_cell_filter(void *snapshot, int32_t command) {
     g_assert_cmpint(*(int *)snapshot, ==, 42);
-    g_assert_cmpint(command, ==, 1);
+    g_assert_cmpint(command, ==, expected_filter_command);
     filter_applied++;
 }
 static void destroy_cell_filter(void *snapshot) { filter_destroyed++; g_free(snapshot); }
@@ -214,7 +215,7 @@ static gboolean verify(gpointer data) {
     GtkWidget *popover = find(cell, GTK_TYPE_POPOVER_MENU);
     g_assert_nonnull(popover);
     GMenuModel *menu = gtk_popover_menu_get_menu_model(GTK_POPOVER_MENU(popover));
-    g_assert_cmpint(g_menu_model_get_n_items(menu), ==, 2);
+    g_assert_cmpint(g_menu_model_get_n_items(menu), ==, 4);
     GMenuModel *copy = g_menu_model_get_item_link(menu, 0, G_MENU_LINK_SECTION);
     char *title = NULL;
     g_assert_true(g_menu_model_get_item_attribute(copy, 0, G_MENU_ATTRIBUTE_LABEL, "s", &title));
@@ -225,8 +226,11 @@ static gboolean verify(gpointer data) {
     g_assert_cmpuint(filter_prepared, ==, 1);
     g_assert_true(gtk_widget_activate_action(popover, "cellfilter.apply", "i", 1));
     g_assert_cmpuint(filter_applied, ==, 1);
-    gtk_popover_popdown(GTK_POPOVER(popover));
+    expected_filter_command = 3;
+    g_assert_true(gtk_widget_activate_action(popover, "cellfilter.apply", "i", 3));
+    g_assert_cmpuint(filter_applied, ==, 1); // Row actions wait for popup cleanup.
     settle_layout();
+    g_assert_cmpuint(filter_applied, ==, 2);
     gtk_widget_unparent(popover);
     GListModel *controllers = gtk_widget_observe_controllers(cell);
     for (guint i = 0; i < g_list_model_get_n_items(controllers); i++) {
@@ -507,6 +511,7 @@ int main(void) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid), view);
     sdbui_value_install(grid, NULL, preview, activate, NULL);
     sdbui_value_filters(grid, prepare_cell_filter, apply_cell_filter, destroy_cell_filter);
+    sdbui_value_editing(grid, 1);
     sdbui_grid_headers(grid, prepare_header, apply_header, destroy_header);
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(setup), NULL);

@@ -80,7 +80,7 @@ public enum SQLDialect: Sendable, Equatable {
     // MARK: Browsing
 
     /// A filter on one column, as in Sequel Ace's content filter bar.
-    public struct Filter: Sendable, Equatable {
+    public struct Filter: Sendable, Hashable {
         public enum Operator: String, CaseIterable, Sendable, CustomStringConvertible {
             case contains = "contains"
             case equals = "="
@@ -142,13 +142,12 @@ public enum SQLDialect: Sendable, Equatable {
 
     /// One page of a table's rows, optionally filtered and ordered by a column.
     public func browseSQL(
-        _ table: TableInfo, filter: Filter?, orderBy: (column: String, ascending: Bool)? = nil,
+        _ table: TableInfo, filter: Filter?, expression: FilterExpression? = nil, orderBy: (column: String, ascending: Bool)? = nil,
         limit: Int, offset: Int
     ) -> String {
         var sql = "SELECT * FROM \(qualifiedName(of: table))"
-        if let filter {
-            sql += " WHERE " + whereClause(for: filter)
-        }
+        if let expression { sql += " WHERE " + whereClause(for: expression) }
+        else if let filter { sql += " WHERE " + whereClause(for: filter) }
         if let orderBy {
             sql += " ORDER BY \(quote(orderBy.column)) \(orderBy.ascending ? "ASC" : "DESC")"
         }

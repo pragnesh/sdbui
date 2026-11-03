@@ -10,7 +10,7 @@ struct QueryTab: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch("query-library-layout", of: { [AnyHashable(model.librarySection?.rawValue), AnyHashable(model.queryDocumentsRevision)] }) { revision &+= 1 }
+        let _ = model.watch("query-library-layout", of: { [AnyHashable(model.librarySection?.rawValue), AnyHashable(model.queryDocumentsRevision), AnyHashable(model.rowEditDraft != nil)] }) { revision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
             QueryDocumentBar(model: model)
             QueryToolbar(model: model)
@@ -28,12 +28,18 @@ struct QueryTab: View {
             StatementLogView(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)
+            AdvancedFilterView(model: model)
+            RowEditingBar(model: model)
+            if model.rowEditDraft != nil {
+                RowEditorView(model: model).frame(maxHeight: .infinity)
+            } else {
             PaneGrid(
                 model: model, pane: model.queryPane, key: "query-grid",
                 emptyText: "Ctrl+L: focus editor · Ctrl+Enter: run statement or selection · Run All: execute script\nEsc: cancel · F5: refresh · Ctrl+P: find table\nSelect a table and choose Show rows to browse without changing your SQL."
             )
             .frame(maxHeight: .infinity)
-            ContentPager(model: model)
+            }
+            ContentPager(model: model).disabled(model.rowEditDraft != nil)
         }
         .padding()
     }

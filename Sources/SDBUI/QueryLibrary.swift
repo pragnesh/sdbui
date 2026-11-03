@@ -126,6 +126,7 @@ final class QueryLibraryStore: @unchecked Sendable {
                     try execute("ALTER TABLE history ADD COLUMN row_count INTEGER")
                     try execute("ALTER TABLE history ADD COLUMN succeeded INTEGER")
                 }
+                try execute("CREATE TABLE IF NOT EXISTS pinned_tables (connection TEXT NOT NULL, table_id TEXT NOT NULL, PRIMARY KEY(connection,table_id))")
                 try execute("CREATE INDEX IF NOT EXISTS history_connection ON history(connection,seq DESC)")
                 try execute("PRAGMA user_version=2")
             }
@@ -241,6 +242,21 @@ final class QueryLibraryStore: @unchecked Sendable {
         if code == SQLITE_INTERRUPT { throw CancellationError() }
         guard code == SQLITE_DONE else { throw ADBCError("Could not read query-history search results.") }
         return QueryHistoryPage(entries: Array(entries.prefix(pageSize)), hasMore: entries.count > pageSize)
+    }
+
+    func pinnedTables(connection: String) -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        guard let statement = try? prepare("SELECT table_id FROM pinned_tables WHERE connection=?") else { return [] }
+        defer { sqlite3_finalize(statement) }
+        bind(connection, to: statement, at: 1)
+        var result: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW { result.insert(text(statement, 0)) }
+        return result
+    }
+    func setTablePinned(_ table: String, connection: String, pinned: Bool) throws {
+        lock.lock(); defer { lock.unlock() }; try writable()
+        try execute(pinned ? "INSERT OR IGNORE INTO pinned_tables VALUES (?,?)" : "DELETE FROM pinned_tables WHERE connection=? AND table_id=?",
+            [connection, table])
     }
 
     func deleteHistory(_ id: UUID) throws {

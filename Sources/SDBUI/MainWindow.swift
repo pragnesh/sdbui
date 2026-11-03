@@ -163,7 +163,7 @@ struct TableBrowser: View {
     var body: some View {
         let _ = filterRevision
         let tables = model.visibleTables(matching: model.tableFilterDraft)
-        let _ = model.watch("table-sidebar-selection", of: { model.selectedTableID }) { filterRevision &+= 1 }
+        let _ = model.watch("table-sidebar-selection", of: { [AnyHashable(model.selectedTableID), AnyHashable(model.pinnedTableIDs)] }) { filterRevision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 // One label: GTK's ellipsizing labels warn when their text is
@@ -176,6 +176,8 @@ struct TableBrowser: View {
                     .buttonStyle(.borderless)
                     .fixedSize()
             }
+            Button(model.selectedTableID.map { model.pinnedTableIDs.contains($0) } == true ? "Unpin selected table" : "Pin selected table") { model.toggleSelectedTablePin() }
+                .disabled(model.selectedTableID == nil)
             #if canImport(GtkBackend)
             VirtualTableList(rows: tables.map { TableSidebarRow(id: $0.id, label: model.label(for: $0)) },
                 selection: model.selectedTableID, model: model)
@@ -288,7 +290,7 @@ struct PaneGrid: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(ObjectIdentifier(pane)), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
+        let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(ObjectIdentifier(pane)), AnyHashable(model.queryFontSize), AnyHashable(model.editMetadataRevision)] }) { revision &+= 1 }
         if pane.hasColumns {
             VStack(alignment: .leading, spacing: 4) {
                 if !pane.hiddenColumns.isEmpty || pane.frozenCount > 0 {
@@ -403,7 +405,7 @@ struct FilterBar: View {
             of: {
                 [
                     AnyHashable(model.isBrowsing), model.contentColumns, model.filterColumn,
-                    model.filterOperator?.rawValue, model.contentFilter == nil, model.filterValue,
+                    model.filterOperator?.rawValue, model.contentFilter == nil, model.filterValue, model.canRun,
                 ]
             }
         ) {
@@ -436,7 +438,7 @@ struct FilterBar: View {
                 Button("Clear") { model.clearContentFilter() }
                     .disabled(model.contentFilter == nil)
                     .fixedSize()
-            }
+            }.disabled(!model.canRun)
         }
     }
 }
@@ -453,7 +455,7 @@ struct ContentPager: View {
             of: {
                 [
                     model.isBrowsing ? 1 : 0, model.contentOffset, model.contentHasMore ? 1 : 0,
-                    model.queryPane.revision, model.selectedTableID.flatMap { model.rowEstimates[$0] }.map(Int.init) ?? -1, model.isRunning ? 1 : 0,
+                    model.queryPane.revision, model.selectedTableID.flatMap { model.rowEstimates[$0] }.map(Int.init) ?? -1, model.isRunning ? 1 : 0, model.contentTotal.map(Int.init) ?? -1,
                 ]
             }
         ) {
@@ -472,6 +474,7 @@ struct ContentPager: View {
                     .frame(width: 100)
                     .disabled(!model.canRun)
                 Button("Go") { model.goToContentPage(page) }.disabled(!model.canRun)
+                Button(model.isCounting ? "Counting…" : "Count exact") { model.countContentRows() }.disabled(!model.canRun).fixedSize()
                 Button("Next ▶") { model.showContentPage(next: true) }
                     .disabled(!model.canRun || !model.contentHasMore)
                     .fixedSize()
@@ -516,7 +519,8 @@ struct InfoTab: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Table information").font(.headline)
             PaneGrid(model: model, pane: model.infoPane, key: "info-grid", emptyText: "Loading…")
-                .frame(height: 300)
+                .frame(height: 180)
+            SchemaDetailsView(model: model).frame(height: 220)
             CreateStatement(model: model)
                 .frame(maxHeight: .infinity)
         }

@@ -383,6 +383,21 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
   return cadbc_execute_options(session, sql, 0, out, rows_affected, error_position, error_out);
 }
 
+int cadbc_autocommit_enabled(CAdbcSession* session) {
+  if (!session->driver.ConnectionGetOption) return -1;
+  char value[32] = {0};
+  size_t length = sizeof(value);
+  struct AdbcError error = make_error();
+  AdbcStatusCode status = session->driver.ConnectionGetOption(&session->connection,
+      ADBC_CONNECTION_OPTION_AUTOCOMMIT, value, &length, &error);
+  if (error.release) error.release(&error);
+  if (status != ADBC_STATUS_OK || length > sizeof(value)) return -1;
+  value[sizeof(value) - 1] = 0;
+  if (strcmp(value, ADBC_OPTION_VALUE_ENABLED) == 0) return 1;
+  if (strcmp(value, ADBC_OPTION_VALUE_DISABLED) == 0) return 0;
+  return -1;
+}
+
 AdbcStatusCode cadbc_cancel(CAdbcSession* session, char** error_out) {
   if (!session->driver.ConnectionCancel) {
     set_error(error_out, format_string("This driver does not support cancellation"));

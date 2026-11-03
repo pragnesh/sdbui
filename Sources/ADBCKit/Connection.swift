@@ -34,6 +34,8 @@ public struct TableInfo: Sendable, Hashable, Identifiable {
 public final class ADBCConnection: @unchecked Sendable {
     private let session: OpaquePointer
     private let lock = NSLock()
+    private var userTransaction = false
+    private var transactionSettingsUnknown = false
     private let tunnel: SSHTunnel?
 
     public let source: ConnectionSource
@@ -114,7 +116,68 @@ public final class ADBCConnection: @unchecked Sendable {
     public func execute(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {
         lock.lock()
         defer { lock.unlock() }
-        return try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
+        let dialect = SQLDialect(vendorName: vendorName)
+        let controls = dialect.statements(in: sql).map { SafetyLexer.tokens($0.text, dialect: dialect).map(\.word) }
+        do {
+            let result = try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
+            for words in controls {
+                if ["BEGIN", "START"].contains(words.first ?? "") { userTransaction = true }
+                if ["COMMIT", "END", "ROLLBACK"].contains(words.first ?? ""), !words.contains("TO") {
+                    userTransaction = words.contains("CHAIN") && !words.contains("NO")
+                }
+                if ["CALL", "DO", "EXECUTE", "XA", "LOCK"].contains(words.first ?? "") || (words.first == "SET" && words.contains("AUTOCOMMIT")) || words.contains("UNSAFE") || (words.first == "FLUSH" && words.contains("LOCK")) { transactionSettingsUnknown = true }
+            }
+            return result
+        } catch {
+            if controls.contains(where: { ["BEGIN", "START", "SET", "CALL", "DO", "EXECUTE", "XA", "LOCK"].contains($0.first ?? "") || $0.contains("UNSAFE") }) { transactionSettingsUnknown = true }
+            throw error
+        }
+    }
+
+    /// The lock covers row verification and COMMIT; unrelated metadata cannot
+    /// interleave. Never take ownership of a manually opened transaction.
+    public func applyTableMutation(_ mutation: TableMutation) throws {
+        lock.lock(); defer { lock.unlock() }
+        let dialect = SQLDialect(vendorName: vendorName)
+        guard dialect != .generic else { throw ADBCError("This driver does not support row editing.") }
+        guard !userTransaction, !transactionSettingsUnknown else {
+            throw ADBCError("Finish the manual transaction before editing rows. Reconnect after changing autocommit settings or executing transaction-controlling procedures.")
+        }
+        guard cadbc_autocommit_enabled(session) == 1 else { throw ADBCError("Row editing requires a driver with confirmed autocommit enabled.") }
+        let sql = try mutation.sql(dialect)
+        _ = try executeLocked(dialect == .postgres ? "BEGIN" : "START TRANSACTION", maxRows: 0)
+        do {
+            guard let eligibility = dialect.editableTableSQL(mutation.table),
+                  try executeLocked(eligibility, maxRows: 1).cell(0, 0) == "YES" else {
+                throw ADBCError("Edits require a base table with transactional storage.")
+            }
+            if mutation.kind != .insert {
+                guard let keySQL = dialect.primaryKeySQL(mutation.table) else { throw ADBCError("Primary-key metadata unavailable.") }
+                let keyResult = try executeLocked(keySQL, maxRows: 1000)
+                let actualKeys = (0..<keyResult.rowCount).compactMap { keyResult.cell($0, 0, maxLength: nil) }
+                guard actualKeys == mutation.keys.map(\.column) else { throw ADBCError("The primary key changed. Refresh before editing.") }
+                let predicate = try mutation.keyPredicate(dialect)
+                let current = try executeLocked("SELECT * FROM \(dialect.qualifiedName(of: mutation.table)) WHERE \(predicate) LIMIT 2 FOR UPDATE", maxRows: 2)
+                let values = current.rowCount == 1 ? current.row(0) : []
+                let unchanged = values.count == mutation.originalValues.count && zip(values, mutation.originalValues).allSatisfy { pair in
+                    switch pair {
+                    case (nil, nil): return true
+                    case (let a?, let b?): return a.utf8.elementsEqual(b.utf8)
+                    default: return false
+                    }
+                }
+                guard current.rowCount == 1, current.columns.map(\.name) == mutation.originalColumns, unchanged else {
+                    throw ADBCError("The row changed or was deleted since it was loaded. Refresh and review it again.")
+                }
+            }
+            let result = try executeLocked(sql, maxRows: 0)
+            guard result.rowsAffected == 1 else { throw ADBCError("The change did not affect exactly one row; it was rolled back.") }
+            _ = try executeLocked("COMMIT", maxRows: 0)
+        } catch {
+            do { _ = try executeLocked("ROLLBACK", maxRows: 0) }
+            catch { transactionSettingsUnknown = true }
+            throw error
+        }
     }
 
     /// Executes one approved read query in a database-enforced read-only transaction.

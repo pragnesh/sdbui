@@ -35,6 +35,8 @@ CAdbcSession* cadbc_open(const char* driver_path, const char* entrypoint,
 
 /// Close the connection and database and unload the driver.
 void cadbc_close(CAdbcSession* session);
+/// 1 enabled, 0 disabled, -1 unavailable. Used before taking ownership of a transaction.
+int cadbc_autocommit_enabled(CAdbcSession* session);
 
 /// Execute `sql`. On success the result stream is written to `out` (the caller
 /// owns it and must release it with `cadbc_stream_release`) and

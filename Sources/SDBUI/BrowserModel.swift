@@ -87,6 +87,7 @@ final class BrowserModel {
     func refreshActiveView() {
         guard canUseConnection, !isRunning else { return }
         refreshTables()
+        contentTotal = nil
         rowEstimates = [:]
         loadedTables = [:]
         if selectedTab == .query, isBrowsing, let table = selectedTable { loadContent(table) }
@@ -183,6 +184,9 @@ final class BrowserModel {
         pane.isSortable = false  // property/value pairs
         return pane
     }()
+    @ObservationIgnored private(set) lazy var relationsPane = makePane()
+    @ObservationIgnored private(set) lazy var triggersPane = makePane()
+    @ObservationIgnored private(set) var viewDefinition = "" { didSet { stateChanged() } }
     @ObservationIgnored private(set) lazy var queryDocuments = [QueryDocument(name: "Query 1", pane: makePane())]
     @ObservationIgnored private(set) var selectedQueryIndex = 0
     @ObservationIgnored private(set) var queryDocumentsRevision = 0 { didSet { stateChanged() } }
@@ -206,6 +210,8 @@ final class BrowserModel {
         document.statusText = statusMessage; document.error = errorMessage
         document.browsing = isBrowsing; document.browseSQL = browseSQL
         document.offset = contentOffset; document.hasMore = contentHasMore
+        document.expression = contentExpression; document.total = contentTotal
+        document.filterGroups = filterGroups; document.filterJoin = filterGroupJoin
         document.filter = contentFilter; document.sort = contentSort; document.columns = contentColumns
         document.filterColumn = filterColumn; document.filterOperator = filterOperator; document.filterValue = filterValue
         document.tableID = selectedTableID; document.cursor = editorCursor; document.selection = editorSelection
@@ -213,6 +219,7 @@ final class BrowserModel {
     func selectQueryDocument(_ id: UUID) {
         guard !isRunning, let index = queryDocuments.firstIndex(where: { $0.id == id }), index != selectedQueryIndex else { return }
         captureQueryDocument()
+        rowEditDraft = nil
         selectedQueryIndex = index
         let document = activeQueryDocument
         pendingQuery = nil
@@ -233,6 +240,8 @@ final class BrowserModel {
         }
         isBrowsing = browseTable != nil
         browseSQL = document.browseSQL; contentOffset = document.offset; contentHasMore = document.hasMore
+        contentExpression = document.expression; contentTotal = document.total
+        filterGroups = document.filterGroups; filterGroupJoin = document.filterJoin
         contentFilter = document.filter; contentSort = document.sort; contentColumns = document.columns
         filterColumn = document.filterColumn; filterOperator = document.filterOperator; filterValue = document.filterValue
         queryDocumentsRevision += 1
@@ -334,6 +343,155 @@ final class BrowserModel {
     func editorCompletions(text: String, cursor: Int) -> SQLCompletion? {
         SQLCompletionEngine.complete(text, cursor: cursor, dialect: dialect, tables: tables,
             namespace: selectedDatabase, columns: completionColumns)
+    }
+
+    // MARK: Browse filters, exact counts, pins and row changes
+
+    @ObservationIgnored var filterGroups: [FilterGroupDraft] = [] { didSet { stateChanged() } }
+    @ObservationIgnored var filterGroupJoin: FilterJoin = .any { didSet { stateChanged() } }
+    @ObservationIgnored var advancedFiltersVisible = false { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var contentExpression: SQLDialect.FilterExpression? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var contentTotal: Int64? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var isCounting = false { didSet { stateChanged() } }
+    var effectiveFilter: SQLDialect.FilterExpression? { contentExpression ?? contentFilter.map(SQLDialect.FilterExpression.condition) }
+    func addFilterGroup() {
+        guard let column = contentColumns.first else { return }
+        let condition = contentFilter ?? SQLDialect.Filter(column: column, op: .equals, value: "")
+        filterGroups.append(FilterGroupDraft(conditions: [.init(filter: condition)]))
+    }
+    func applyAdvancedFilters() {
+        guard canRun, isBrowsing, let table = selectedTable else { return }
+        let conditions = filterGroups.flatMap(\.conditions)
+        guard !conditions.isEmpty, filterGroups.allSatisfy({ !$0.conditions.isEmpty }),
+              conditions.allSatisfy({ contentColumns.contains($0.filter.column) && !$0.filter.value.contains("\0") }) else {
+            errorMessage = "Add valid conditions with known columns and values without embedded NUL."
+            return
+        }
+        contentExpression = filterGroupJoin == .all ? .all(filterGroups.map(\.expression)) : .any(filterGroups.map(\.expression))
+        contentFilter = conditions.first?.filter
+        contentTotal = nil
+        contentOffset = 0
+        loadContent(table)
+    }
+    func countContentRows() {
+        guard canRun, isBrowsing, let table = selectedTable else { return }
+        let revision = sessionRevision, document = activeQueryDocument.id, expression = effectiveFilter
+        isRunning = true; isCounting = true; queryCancellationRequested = false
+        statusMessage = "Counting rows…"
+        Task {
+            let outcome = await fetch(dialect.countSQL(table, expression: expression), maxRows: 1, readOnly: connectionSafety.readOnly)
+            guard revision == sessionRevision else { return }
+            isRunning = false; isCounting = false
+            guard activeQueryDocument.id == document, selectedTableID == table.id, effectiveFilter == expression else { return }
+            switch outcome {
+            case .success(let result):
+                if let text = result.cell(0, 0), let count = Int64(text) { contentTotal = count; statusMessage = "Exact count: \(count.formatted()) rows" }
+            case .failure(let error): errorMessage = "Count failed: \(error)"
+            }
+        }
+    }
+
+    @ObservationIgnored private(set) var pinnedTableIDs: Set<String> = [] { didSet { stateChanged() } }
+    private var pinScope: String {
+        if let id = restorableProfileID { return "favorite:" + id }
+        if case .direct(let driver, let uri, _) = connection?.source, let url = URLComponents(string: uri) {
+            return [driver ?? connectionTitle, url.host ?? "", url.port.map(String.init) ?? "", url.path].joined(separator: "|")
+        }
+        return connectionTitle
+    }
+    func toggleSelectedTablePin() {
+        guard let id = selectedTableID else { return }
+        do {
+            try queryLibrary.setTablePinned(id, connection: pinScope, pinned: !pinnedTableIDs.contains(id))
+            pinnedTableIDs = queryLibrary.pinnedTables(connection: pinScope)
+        } catch { errorMessage = "Could not save table pin: \(error)" }
+    }
+
+    @ObservationIgnored private(set) var editMetadata: [String: TableEditMetadata] = [:]
+    @ObservationIgnored private var editMetadataLoading: Set<String> = []
+    @ObservationIgnored private(set) var editMetadataRevision = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var editMetadataError = "" { didSet { stateChanged() } }
+    @ObservationIgnored var rowEditDraft: RowEditDraft? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var editFeedback = "" { didSet { stateChanged() } }
+    var canInsertRows: Bool { canRun && isBrowsing && !connectionSafety.readOnly && selectedTableID.flatMap { editMetadata[$0]?.transactional } == true }
+    var canEditRows: Bool { canInsertRows && selectedTableID.flatMap { editMetadata[$0]?.canIdentifyRows } == true }
+    private func loadEditMetadata(_ table: TableInfo) {
+        guard editMetadata[table.id] == nil, !editMetadataLoading.contains(table.id),
+              let columnsSQL = dialect.editColumnsSQL(table), let keySQL = dialect.primaryKeySQL(table),
+              let eligibility = dialect.editableTableSQL(table) else { return }
+        editMetadataLoading.insert(table.id)
+        let revision = sessionRevision
+        Task {
+            do {
+                let columns = try await fetch(columnsSQL).get()
+                guard revision == sessionRevision else { return }
+                let keys = try await fetch(keySQL).get()
+                guard revision == sessionRevision else { return }
+                let eligible = try await fetch(eligibility, maxRows: 1).get()
+                guard revision == sessionRevision else { return }
+                editMetadata[table.id] = TableEditMetadata(columns: (0..<columns.rowCount).compactMap { row in
+                    guard let name = columns.cell(row, 0, maxLength: nil), let type = columns.cell(row, 1) else { return nil }
+                    return TableEditColumn(name: name, type: type, nullable: columns.cell(row, 2) == "YES", generated: columns.cell(row, 4) == "YES")
+                }, keys: (0..<keys.rowCount).compactMap { keys.cell($0, 0, maxLength: nil) }, transactional: eligible.cell(0, 0) == "YES")
+                editMetadataError = ""
+            } catch {
+                guard revision == sessionRevision else { return }
+                editMetadataError = "Row metadata unavailable: \(error)"
+            }
+            guard revision == sessionRevision else { return }
+            editMetadataLoading.remove(table.id); editMetadataRevision += 1
+        }
+    }
+    func beginRowEdit(kind: TableMutation.Kind, row: Int? = nil) {
+        guard canInsertRows, kind == .insert || canEditRows, let table = selectedTable,
+              let metadata = editMetadata[table.id] else { errorMessage = "Row editing is unavailable for this table or read-only connection."; return }
+        let result = queryPane.result
+        guard kind == .insert || (row.map { $0 >= 0 && $0 < (result?.rowCount ?? 0) } == true) else { return }
+        let names = result?.columns.map(\.name) ?? []
+        let values = row.flatMap { result?.row($0) } ?? []
+        let fields = metadata.columns.map { column in
+            let value = names.firstIndex(of: column.name).flatMap { values.indices.contains($0) ? values[$0] : nil }
+            return RowEditField(column: column, mode: kind == .insert || column.generated ? .default : (value == nil ? .null : .value), text: value ?? "", unrepresentable: value?.contains("\0") == true)
+        }
+        rowEditDraft = RowEditDraft(table: table, documentID: activeQueryDocument.id, sessionRevision: sessionRevision,
+            paneRevision: queryPane.revision, kind: kind, metadata: metadata, originalColumns: names, originalValues: values, fields: fields)
+        editFeedback = ""
+    }
+    func cancelRowEdit() { rowEditDraft = nil }
+    private func rowDraftIsCurrent(_ draft: RowEditDraft) -> Bool {
+        canInsertRows && draft.sessionRevision == sessionRevision && draft.documentID == activeQueryDocument.id
+            && draft.table.id == selectedTableID && draft.paneRevision == queryPane.revision && editMetadata[draft.table.id] == draft.metadata
+    }
+    func reviewRowEdit() {
+        guard var draft = rowEditDraft else { return }
+        guard rowDraftIsCurrent(draft) else { errorMessage = "Results changed. Reopen the row editor from the current result."; return }
+        do { draft.reviewedSQL = try draft.mutation().sql(dialect); rowEditDraft = draft }
+        catch { errorMessage = "\(error)" }
+    }
+    func confirmRowEdit() {
+        guard let draft = rowEditDraft, rowDraftIsCurrent(draft), let reviewed = draft.reviewedSQL, let connection else { return }
+        do {
+            let mutation = try draft.mutation()
+            guard try mutation.sql(dialect) == reviewed else { errorMessage = "The change was modified. Review it again."; return }
+            let revision = sessionRevision
+            isRunning = true; queryCancellationRequested = false
+            Task {
+                let outcome = await Task.detached { Result { try connection.applyTableMutation(mutation) } }.value
+                guard revision == sessionRevision else { return }
+                isRunning = false
+                switch outcome {
+                case .success:
+                    rowEditDraft = nil; editFeedback = "Row \(mutation.kind.rawValue) committed."
+                    contentTotal = nil; rowEstimates.removeValue(forKey: draft.table.id)
+                    editMetadata.removeValue(forKey: draft.table.id)
+                    if selectedTableID == draft.table.id && activeQueryDocument.id == draft.documentID { loadContent(draft.table) }
+                    else { statusMessage = "Change committed to \(draft.table.name)." }
+                case .failure(let error):
+                    handleConnectionFailure(error, from: connection)
+                    errorMessage = "Change failed: \(error)"
+                }
+            }
+        } catch { errorMessage = "\(error)" }
     }
 
     // MARK: Query library
@@ -788,6 +946,8 @@ final class BrowserModel {
         queryStatus = nil
         queryErrorLocation = nil
         tables = []
+        rowEditDraft = nil; editMetadata = [:]; editMetadataLoading = []; editMetadataError = ""
+        contentTotal = nil; isCounting = false; pinnedTableIDs = []; contentExpression = nil
         rowEstimates = [:]
         estimateLoads = []
         selectedDatabase = nil
@@ -849,7 +1009,8 @@ final class BrowserModel {
 
     /// All matching names, with exact/prefix/substring matches ahead of fuzzy matches.
     func visibleTables(matching filter: String) -> [TableInfo] {
-        TableSearch.results(tables, namespace: selectedDatabase ?? "", query: filter)
+        let matches = TableSearch.results(tables, namespace: selectedDatabase ?? "", query: filter)
+        return matches.filter { pinnedTableIDs.contains($0.id) } + matches.filter { !pinnedTableIDs.contains($0.id) }
     }
 
     /// Record a filter keystroke and call `apply` once typing pauses.
@@ -869,9 +1030,9 @@ final class BrowserModel {
 
     func label(for table: TableInfo) -> String {
         if let type = table.type, type.uppercased() != "TABLE", type.uppercased() != "BASE TABLE" {
-            return "\(table.name)  (\(type.lowercased()))"
+            return (pinnedTableIDs.contains(table.id) ? "★ " : "") + "\(table.name)  (\(type.lowercased()))"
         }
-        return table.name
+        return (pinnedTableIDs.contains(table.id) ? "★ " : "") + table.name
     }
 
     func refreshTables() {
@@ -905,6 +1066,9 @@ final class BrowserModel {
                             ?? databases.first
                     }
                     preferredDatabase = nil
+                    editMetadata = [:]
+                    if isBrowsing, let table = selectedTable { loadEditMetadata(table) }
+                    pinnedTableIDs = queryLibrary.pinnedTables(connection: pinScope)
                     completionColumns = [:]
                     scheduleCompletionMetadata()
                     applySelectedDatabase()
@@ -928,6 +1092,7 @@ final class BrowserModel {
         guard canUseConnection else { return }
         guard id != selectedTableID else { return }
         selectedTableID = id
+        rowEditDraft = nil; filterGroups = []; advancedFiltersVisible = false
         if isBrowsing {
             // The rows belong to the previous table.
             isBrowsing = false
@@ -938,6 +1103,7 @@ final class BrowserModel {
         loadedTables = [:]
         contentOffset = 0
         contentFilter = nil
+        contentExpression = nil; contentTotal = nil
         contentSort = nil
         contentColumns = []
         filterColumn = nil
@@ -946,10 +1112,11 @@ final class BrowserModel {
     }
 
     private func clearTablePanes() {
-        for pane in [structurePane, indexPane, infoPane] {
+        for pane in [structurePane, indexPane, infoPane, relationsPane, triggersPane] {
             pane.show(nil)
         }
         createStatement = ""
+        viewDefinition = ""
     }
 
     // MARK: Tabs
@@ -962,6 +1129,8 @@ final class BrowserModel {
     /// Reload what the current tab shows.
     func refreshCurrentTab() {
         guard canRun else { return }
+        contentTotal = nil
+        if let id = selectedTableID { editMetadata.removeValue(forKey: id); editMetadataRevision += 1 }
         if let id = selectedTableID { rowEstimates.removeValue(forKey: id) }
         if selectedTab == .query {
             if isBrowsing, let table = selectedTable {
@@ -1022,9 +1191,10 @@ final class BrowserModel {
 
     /// Shows the first page of the selected table's rows in the Query tab.
     func browseSelectedTable() {
-        guard canUseConnection, let table = selectedTable else { return }
+        guard canRun, let table = selectedTable else { return }
         contentOffset = 0
         contentFilter = nil
+        contentExpression = nil; contentTotal = nil
         contentSort = nil
         contentColumns = []
         filterColumn = nil
@@ -1033,19 +1203,19 @@ final class BrowserModel {
 
     /// Shows one page of `table` in the Query tab, with its SQL above the rows.
     private func loadContent(_ table: TableInfo) {
-        guard canUseConnection else { return }
+        guard canRun else { return }
         let revision = sessionRevision
         let orderBy = contentSort.flatMap { sort in
             contentColumns.indices.contains(sort.column)
                 ? (column: contentColumns[sort.column], ascending: sort.ascending) : nil
         }
         let sql = dialect.browseSQL(
-            table, filter: contentFilter, orderBy: orderBy, limit: pageSize + 1,
+            table, filter: contentFilter, expression: contentExpression, orderBy: orderBy, limit: pageSize + 1,
             offset: contentOffset)
         // As shown on the Query tab: the page's real limit (one extra row is
         // fetched only to know whether there's a next page).
         let displayedSQL = dialect.browseSQL(
-            table, filter: contentFilter, orderBy: orderBy, limit: pageSize,
+            table, filter: contentFilter, expression: contentExpression, orderBy: orderBy, limit: pageSize,
             offset: contentOffset)
         loadRowEstimate(table)
         browseSQL = displayedSQL
@@ -1070,6 +1240,7 @@ final class BrowserModel {
                         contentColumns = result.columns.map(\.name)
                         completionColumns[table.id] = contentColumns
                     }
+                    loadEditMetadata(table)
                     statusMessage = "\(contentRowsLabel) in \(Self.format(result.elapsed))"
                 case .failure(let error):
                     contentHasMore = false
@@ -1112,8 +1283,12 @@ final class BrowserModel {
 
     var contentRowsLabel: String {
         let count = queryPane.result?.rowCount ?? 0
-        guard count > 0 else { return contentFilter == nil ? "No rows" : "No matching rows" }
+        guard count > 0 else {
+            if let total = contentTotal { return total == 0 ? "No matching rows (0 total)" : "No rows on this page (\(total.formatted()) total)" }
+            return contentFilter == nil ? "No rows" : "No matching rows"
+        }
         let range = "Rows \(contentOffset + 1)–\(contentOffset + count)"
+        if let total = contentTotal { return range + " of \(total.formatted()) (exact)" }
         if contentFilter == nil, let id = selectedTableID, let estimate = rowEstimates[id], estimate >= Int64(contentOffset + count) {
             return range + " of ~\(estimate.formatted()) (estimate)"
         }
@@ -1136,12 +1311,13 @@ final class BrowserModel {
     }
 
     func applyContentFilter() {
-        guard canUseConnection else { return }
+        guard canRun else { return }
         guard let table = selectedTable else { return }
         if let column = filterColumn ?? contentColumns.first, let op = filterOperator {
             contentFilter = SQLDialect.Filter(column: column, op: op, value: filterValue)
         } else {
             contentFilter = nil
+        contentExpression = nil; contentTotal = nil
         }
         contentOffset = 0
         loadContent(table)
@@ -1152,14 +1328,18 @@ final class BrowserModel {
               let result = pane.result, row >= 0, row < result.rowCount,
               result.columns.indices.contains(column) else { return nil }
         return CellFilterTarget(column: result.columns[column].name, value: result.cell(row, column, maxLength: nil),
-            tableID: table.id, sessionRevision: sessionRevision, paneRevision: pane.revision, queryID: activeQueryDocument.id)
+            tableID: table.id, sessionRevision: sessionRevision, paneRevision: pane.revision, queryID: activeQueryDocument.id, row: row)
     }
 
     func applyCellFilter(_ target: CellFilterTarget, command: Int32) {
-        guard (0...2).contains(command) else { return }
+        guard (0...4).contains(command) else { return }
         guard canRun, isBrowsing, selectedTableID == target.tableID, target.queryID == activeQueryDocument.id,
               sessionRevision == target.sessionRevision, queryPane.revision == target.paneRevision,
               let table = selectedTable else { return }
+        if command == 3 || command == 4 {
+            if let row = target.row { beginRowEdit(kind: command == 3 ? .update : .delete, row: row) }
+            return
+        }
         guard let filter = target.filter(for: command) else {
             errorMessage = "This value cannot be represented by the text filter (embedded NUL)."
             return
@@ -1168,14 +1348,16 @@ final class BrowserModel {
         filterOperator = filter.op
         filterValue = filter.value
         contentFilter = filter
+        contentExpression = nil; contentTotal = nil
         contentOffset = 0
         loadContent(table)
     }
 
     func clearContentFilter() {
-        guard canUseConnection else { return }
+        guard canRun else { return }
         guard let table = selectedTable, contentFilter != nil else { return }
         contentFilter = nil
+        contentExpression = nil; contentTotal = nil
         contentOffset = 0
         loadContent(table)
     }
@@ -1232,6 +1414,10 @@ final class BrowserModel {
                     rows: [["Name", table.name], ["Type", table.type ?? ""]]))
             }
             guard revision == sessionRevision, canUseConnection else { return }
+            if let sql = dialect.relationsSQL(table) { apply(await fetch(sql), to: relationsPane, for: table, what: "relations", revision: revision) }
+            if let sql = dialect.triggersSQL(table) { apply(await fetch(sql), to: triggersPane, for: table, what: "triggers", revision: revision) }
+            if let sql = dialect.viewDefinitionSQL(table), case .success(let result) = await fetch(sql),
+               revision == sessionRevision, selectedTableID == table.id { viewDefinition = result.cell(0, 0, maxLength: nil) ?? "" }
             if let createSQL = dialect.createTableSQL(table),
                 case .success(let result) = await fetch(createSQL),
                 revision == sessionRevision, canUseConnection, selectedTableID == table.id

@@ -42,7 +42,7 @@ public struct SQLSafetyAssessment: Sendable, Equatable {
     }
 }
 
-private enum SafetyLexer {
+enum SafetyLexer {
     struct Token { let word: String; let depth: Int }
     static func tokens(_ sql: String, dialect: SQLDialect) -> [Token] {
         let s = Array(sql.unicodeScalars)

@@ -75,8 +75,28 @@ static AdbcStatusCode release_statement(struct AdbcStatement* statement,
   statement_releases++;
   return ADBC_STATUS_OK;
 }
+static const char *autocommit_value = "true";
+static AdbcStatusCode autocommit_status = ADBC_STATUS_OK;
+static AdbcStatusCode get_autocommit(struct AdbcConnection *connection, const char *key,
+                                     char *value, size_t *length, struct AdbcError *error) {
+  (void)connection; (void)error;
+  assert(strcmp(key, ADBC_CONNECTION_OPTION_AUTOCOMMIT) == 0);
+  assert(*length >= strlen(autocommit_value) + 1);
+  strcpy(value, autocommit_value); *length = strlen(autocommit_value) + 1;
+  return autocommit_status;
+}
 int main(void) {
   CAdbcSession session = {0};
+  assert(cadbc_autocommit_enabled(&session) == -1);
+  session.driver.ConnectionGetOption = get_autocommit;
+  assert(cadbc_autocommit_enabled(&session) == 1);
+  autocommit_value = "false";
+  assert(cadbc_autocommit_enabled(&session) == 0);
+  autocommit_value = "unknown";
+  assert(cadbc_autocommit_enabled(&session) == -1);
+  autocommit_status = ADBC_STATUS_NOT_IMPLEMENTED;
+  assert(cadbc_autocommit_enabled(&session) == -1);
+
   session.driver.ErrorGetDetailCount = detail_count;
   session.driver.ErrorGetDetail = detail_get;
   struct AdbcError details = make_error();

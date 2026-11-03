@@ -9,6 +9,7 @@ struct CellFilterTarget: Sendable {
     let sessionRevision: Int
     let paneRevision: Int
     var queryID: UUID? = nil
+    var row: Int? = nil
 
     func filter(for command: Int32) -> SQLDialect.Filter? {
         let op: SQLDialect.Filter.Operator
