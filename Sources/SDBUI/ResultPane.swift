@@ -30,16 +30,59 @@ final class ResultPane {
         (.generic, "table_name")
     }
 
+    private(set) var hiddenColumns: Set<Int> = []
+    private(set) var frozenCount = 0
+    var visibleColumns: [Int] { columns.indices.filter { !hiddenColumns.contains($0) } }
+    var frozenColumns: [Int] { Array(visibleColumns.prefix(frozenCount)) }
+    var scrollingColumns: [Int] { Array(visibleColumns.dropFirst(frozenCount)) }
+
+    /// Commands shared by the native header menu. Clipboard commands return text.
+    func headerCommand(_ command: Int32, column: Int) -> String? {
+        guard let result, result.columns.indices.contains(column) else { return nil }
+        switch command {
+        case 0, 1:
+            guard isSortable else { return nil }
+            requestSort(DataGridSort(column: column, ascending: command == 0))
+            return nil
+        case 2: return result.columns[column].name
+        case 3: return (0..<result.rowCount).map { result.cell($0, column, maxLength: nil) ?? "NULL" }.joined(separator: "\n")
+        case 4:
+            guard visibleColumns.count > 1 else { return nil }
+            hiddenColumns.insert(column)
+            frozenCount = min(frozenCount, max(0, visibleColumns.count - 1))
+        case 5:
+            let characters = (0..<min(result.rowCount, 1000)).map {
+                (result.cell($0, column, maxLength: 200) ?? "NULL").prefix(200).count
+            }.max() ?? 4
+            columns[column].width = min(1600, max(Self.gridColumns(result)[column].width, characters * 8 + 24))
+        case 6:
+            if let position = visibleColumns.firstIndex(of: column) {
+                frozenCount = min(position + 1, max(0, visibleColumns.count - 1))
+            }
+        case 7: frozenCount = 0
+        case 8: hiddenColumns = []
+        default: return nil
+        }
+        revision += 1
+        onChange()
+        return nil
+    }
+
     var hasColumns: Bool {
         !(result?.columns.isEmpty ?? true)
     }
 
     /// Show a new result, already in the order `sort` describes (if any).
     func show(_ result: QueryResult?, sortedBy sort: DataGridSort? = nil) {
+        let newColumns = result.map(Self.gridColumns) ?? []
+        if columns.map(\.title) != newColumns.map(\.title) {
+            hiddenColumns = []
+            frozenCount = 0
+            columns = newColumns
+        }
         self.result = result
         unsortedResult = result
         self.sort = sort
-        columns = result.map(Self.gridColumns) ?? []
         revision += 1
         onChange()
     }

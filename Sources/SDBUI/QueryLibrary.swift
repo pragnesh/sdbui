@@ -12,6 +12,18 @@ struct QueryHistoryEntry: Codable, Identifiable, Hashable, Sendable {
     var sql: String
     var connection: String
     var date = Date()
+    var duration: Double? = nil
+    var rowCount: Int64? = nil
+    var succeeded: Bool? = nil
+}
+
+extension QueryHistoryEntry {
+    var outcomeLabel: String {
+        var parts = [succeeded.map { $0 ? "✓ Succeeded" : "✗ Failed or cancelled" } ?? "Outcome unavailable"]
+        if let duration { parts.append(String(format: "%.3f s", duration)) }
+        if let rowCount { parts.append("\(rowCount.formatted()) rows") }
+        return parts.joined(separator: " · ")
+    }
 }
 
 struct QuerySnippet: Codable, Identifiable, Hashable, Sendable {
@@ -96,7 +108,7 @@ final class QueryLibraryStore: @unchecked Sendable {
                 SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw failure() }
             sqlite3_busy_timeout(database, 2000)
             let version = try scalar("PRAGMA user_version")
-            guard version == 0 || version == 1 else { throw ADBCError("Unsupported query library version.") }
+            guard (0...2).contains(version) else { throw ADBCError("Unsupported query library version.") }
             try execute("PRAGMA journal_mode=WAL")
             try execute("PRAGMA synchronous=NORMAL")
             try transaction {
@@ -109,7 +121,13 @@ final class QueryLibraryStore: @unchecked Sendable {
                 }
                 try execute("CREATE TRIGGER IF NOT EXISTS history_added AFTER INSERT ON history BEGIN UPDATE library_meta SET value=value+1 WHERE key='history_count'; END")
                 try execute("CREATE TRIGGER IF NOT EXISTS history_deleted AFTER DELETE ON history BEGIN UPDATE library_meta SET value=value-1 WHERE key='history_count'; END")
-                try execute("PRAGMA user_version=1")
+                if version < 2 {
+                    try execute("ALTER TABLE history ADD COLUMN duration REAL")
+                    try execute("ALTER TABLE history ADD COLUMN row_count INTEGER")
+                    try execute("ALTER TABLE history ADD COLUMN succeeded INTEGER")
+                }
+                try execute("CREATE INDEX IF NOT EXISTS history_connection ON history(connection,seq DESC)")
+                try execute("PRAGMA user_version=2")
             }
             let legacy = url?.pathExtension == "json" ? url : databaseURL?.deletingPathExtension().appendingPathExtension("json")
             if try scalar("SELECT count(*) FROM library_meta WHERE key='legacy_imported'") == 0 {
@@ -141,20 +159,30 @@ final class QueryLibraryStore: @unchecked Sendable {
 
     deinit { sqlite3_close(database) }
 
-    func record(sql: String, connection: String) throws {
-        guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    @discardableResult
+    func record(sql: String, connection: String) throws -> UUID? {
+        guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         lock.lock(); defer { lock.unlock() }
         try writable()
+        let entry = QueryHistoryEntry(sql: sql, connection: connection)
         try transaction {
-            try insertHistory(.init(sql: sql, connection: connection))
+            try insertHistory(entry)
             try trimHistory()
         }
+        return entry.id
+    }
+
+    func completeHistory(_ id: UUID, duration: Double, rowCount: Int64?, succeeded: Bool) throws {
+        lock.lock(); defer { lock.unlock() }
+        try writable()
+        try execute("UPDATE history SET duration=?,row_count=?,succeeded=? WHERE id=?",
+            [String(max(0, duration)), rowCount.map(String.init), succeeded ? "1" : "0", id.uuidString])
     }
 
     /// Search is cancellable and bounded. Disk libraries use a separate WAL
     /// reader so a long search never holds the UI's history-writing lock.
     func historyPage(matching search: String = "", offset: Int = 0, limit: Int = QueryLibraryStore.historyPageSize,
-                     cancellation: QuerySearchCancellation? = nil) throws -> QueryHistoryPage {
+                     cancellation: QuerySearchCancellation? = nil, connection: String? = nil) throws -> QueryHistoryPage {
         if let loadError { throw ADBCError(loadError) }
         var reader: OpaquePointer?
         if let databaseURL {
@@ -182,9 +210,12 @@ final class QueryLibraryStore: @unchecked Sendable {
         }
         guard cancellation?.isCancelled != true else { throw CancellationError() }
         let pageSize = min(max(1, limit), Self.historyPageSize)
-        let filter = search.isEmpty ? "" : " WHERE sql LIKE ? ESCAPE '\\' OR connection LIKE ? ESCAPE '\\'"
+        var conditions: [String] = []
+        if !search.isEmpty { conditions.append("(sql LIKE ? ESCAPE '\\' OR connection LIKE ? ESCAPE '\\')") }
+        if connection != nil { conditions.append("connection = ?") }
+        let filter = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(reader, "SELECT id,sql,connection,date FROM history\(filter) ORDER BY seq DESC LIMIT ? OFFSET ?", -1, &statement, nil) == SQLITE_OK else {
+        guard sqlite3_prepare_v2(reader, "SELECT id,sql,connection,date,duration,row_count,succeeded FROM history\(filter) ORDER BY seq DESC LIMIT ? OFFSET ?", -1, &statement, nil) == SQLITE_OK else {
             throw ADBCError("Could not prepare query-history search.")
         }
         defer { sqlite3_finalize(statement) }
@@ -194,13 +225,17 @@ final class QueryLibraryStore: @unchecked Sendable {
             bind(escaped, to: statement, at: 1); bind(escaped, to: statement, at: 2)
             index = 3
         }
+        if let connection { bind(connection, to: statement, at: index); index += 1 }
         sqlite3_bind_int64(statement, index, Int64(pageSize + 1))
         sqlite3_bind_int64(statement, index + 1, Int64(max(0, offset)))
         var entries: [QueryHistoryEntry] = []
         var code = sqlite3_step(statement)
         while code == SQLITE_ROW {
             guard let id = UUID(uuidString: text(statement, 0)) else { throw ADBCError("Invalid query-history identifier.") }
-            entries.append(.init(id: id, sql: text(statement, 1), connection: text(statement, 2), date: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))))
+            entries.append(.init(id: id, sql: text(statement, 1), connection: text(statement, 2), date: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
+                duration: sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 4),
+                rowCount: sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 5),
+                succeeded: sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : sqlite3_column_int(statement, 6) != 0))
             code = sqlite3_step(statement)
         }
         if code == SQLITE_INTERRUPT { throw CancellationError() }
@@ -275,10 +310,13 @@ final class QueryLibraryStore: @unchecked Sendable {
         guard let pointer = sqlite3_column_text(statement, column) else { return "" }
         return String(decoding: UnsafeBufferPointer(start: pointer, count: Int(sqlite3_column_bytes(statement, column))), as: UTF8.self)
     }
-    private func execute(_ sql: String, _ values: [String] = []) throws {
+    private func execute(_ sql: String, _ values: [String?] = []) throws {
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
-        for (index, value) in values.enumerated() { bind(value, to: statement, at: Int32(index + 1)) }
+        for (index, value) in values.enumerated() {
+            if let value { bind(value, to: statement, at: Int32(index + 1)) }
+            else { sqlite3_bind_null(statement, Int32(index + 1)) }
+        }
         let result = sqlite3_step(statement)
         guard result == SQLITE_DONE || result == SQLITE_ROW else { throw failure() }
     }

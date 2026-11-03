@@ -1,5 +1,10 @@
 import Foundation
 import SwiftCrossUI
+#if canImport(GtkBackend)
+import GtkBackend
+import Gtk
+import CGtk
+#endif
 
 struct QueryLibraryBar: View {
     var model: BrowserModel
@@ -32,6 +37,7 @@ struct QueryLibraryPanel: View {
     var section: QueryLibrarySection
     @State private var revision = 0
     @State private var search = ""
+    @State private var thisConnectionOnly = false
     @State private var selectedHistoryID: UUID?
     @State private var selectedSnippetID: UUID?
     @State private var snippetName = ""
@@ -56,6 +62,7 @@ struct QueryLibraryPanel: View {
         historyError = ""
         let cancellation = QuerySearchCancellation()
         historyCancellation = cancellation
+        let connection = thisConnectionOnly ? model.connectionTitle : nil
         let query = search
         let offset = historyOffset
         let store = model.queryLibrary
@@ -65,7 +72,7 @@ struct QueryLibraryPanel: View {
             }
             guard !cancellation.isCancelled else { return }
             let outcome = await Task.detached {
-                Result { try store.historyPage(matching: query, offset: offset, cancellation: cancellation) }
+                Result { try store.historyPage(matching: query, offset: offset, cancellation: cancellation, connection: connection) }
             }.value
             guard !cancellation.isCancelled else { return }
             historyLoading = false
@@ -125,6 +132,8 @@ struct QueryLibraryPanel: View {
                 }
             ))
             if section == .history {
+                Toggle("This connection only", isOn: Binding(
+                    get: { thisConnectionOnly }, set: { thisConnectionOnly = $0; reloadHistory() }))
                 if history.isEmpty {
                     Text(historyLoading ? "Searching…" : (!historyError.isEmpty ? historyError : (search.isEmpty ? "Manually executed SQL appears here." : "No matching history.")))
                         .foregroundColor(.gray)
@@ -136,8 +145,10 @@ struct QueryLibraryPanel: View {
                                 Text(preview(entry.sql)).lineLimit(2)
                                 Text("\(entry.connection) · \(entry.date.formatted(date: .abbreviated, time: .shortened))")
                                     .font(.caption).foregroundColor(.gray).lineLimit(1)
+                                Text(entry.outcomeLabel).font(.caption)
                             }
                         }
+                        .loadingHistoryOnActivation(history, model: model)
                     }
                     .frame(maxHeight: .infinity)
                 }
@@ -225,5 +236,24 @@ struct QueryLibraryPanel: View {
             historyTask?.cancel()
             historyCancellation?.cancel()
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func loadingHistoryOnActivation(_ history: [QueryHistoryEntry], model: BrowserModel) -> some View {
+        #if canImport(GtkBackend)
+        inspect([.onCreate, .afterUpdate]) { widget in
+            guard let list = widget as? Gtk.ListBox else { return }
+            list.activateOnSingleClick = false
+            list.rowActivated = { _, row in
+                let index = Int(gtk_list_box_row_get_index(row))
+                guard history.indices.contains(index) else { return }
+                model.loadLibrarySQL(history[index].sql)
+            }
+        }
+        #else
+        self
+        #endif
     }
 }

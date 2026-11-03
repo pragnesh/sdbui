@@ -65,6 +65,95 @@ static void copy_popup(GtkGestureClick *gesture, gint count, gdouble x, gdouble 
     gtk_popover_popup(GTK_POPOVER(popover));
 }
 
+static guint header_prepared, header_applied, header_destroyed;
+static void *prepare_header(void *context, uint32_t column) {
+    (void)context;
+    g_assert_cmpuint(column, ==, 0);
+    header_prepared++;
+    return g_strdup("header snapshot");
+}
+static char *apply_header(void *snapshot, int32_t command) {
+    g_assert_cmpstr(snapshot, ==, "header snapshot");
+    g_assert_cmpint(command, ==, 2);
+    header_applied++;
+    return strdup("Value");
+}
+static void destroy_header(void *snapshot) { header_destroyed++; g_free(snapshot); }
+static GtkWidget *find_css(GtkWidget *root, const char *name) {
+    if (strcmp(gtk_widget_get_css_name(root), name) == 0) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_css(child, name);
+        if (found) return found;
+    }
+    return NULL;
+}
+static void test_header_menu(void) {
+    GtkWidget *view = find(grid, GTK_TYPE_COLUMN_VIEW);
+    GtkWidget *header = find_css(view, "header");
+    g_assert_nonnull(header);
+    GtkWidget *title = gtk_widget_get_first_child(header);
+    g_assert_nonnull(title);
+    graphene_rect_t bounds;
+    g_assert_true(gtk_widget_compute_bounds(title, view, &bounds));
+    GListModel *controllers = gtk_widget_observe_controllers(view);
+    for (guint i = 0; i < g_list_model_get_n_items(controllers); i++) {
+        GObject *controller = g_list_model_get_item(controllers, i);
+        if (GTK_IS_GESTURE_CLICK(controller) && gtk_gesture_single_get_button(GTK_GESTURE_SINGLE(controller)) == GDK_BUTTON_SECONDARY) {
+            g_signal_emit_by_name(controller, "pressed", 1, bounds.origin.x + 10.0, bounds.origin.y + 10.0);
+        }
+        g_object_unref(controller);
+    }
+    g_object_unref(controllers);
+    GtkWidget *popover = find(view, GTK_TYPE_POPOVER_MENU);
+    g_assert_nonnull(popover);
+    GMenuModel *menu = gtk_popover_menu_get_menu_model(GTK_POPOVER_MENU(popover));
+    g_assert_cmpint(g_menu_model_get_n_items(menu), ==, 9);
+    g_assert_cmpuint(header_prepared, ==, 1);
+    g_assert_true(gtk_widget_activate_action(popover, "header.apply", "i", 2));
+    g_assert_cmpuint(header_applied, ==, 1);
+    gtk_popover_popdown(GTK_POPOVER(popover));
+    settle_layout();
+    g_assert_cmpuint(header_destroyed, ==, 1);
+}
+
+static void test_frozen_grids(void) {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    g_object_ref_sink(box);
+    GtkWidget *grids[2];
+    GtkSelectionModel *models[2];
+    for (int i = 0; i < 2; i++) {
+        GtkStringList *rows = gtk_string_list_new(NULL);
+        for (int j = 0; j < 100; j++) gtk_string_list_append(rows, "row");
+        models[i] = GTK_SELECTION_MODEL(gtk_multi_selection_new(G_LIST_MODEL(rows)));
+        GtkWidget *view = gtk_column_view_new(models[i]);
+        grids[i] = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grids[i]), view);
+        sdbui_value_install(grids[i], NULL, NULL, NULL, NULL);
+        gtk_box_append(GTK_BOX(box), grids[i]);
+    }
+    sdbui_grid_pair(box);
+    sdbui_grid_pair(box); // Repeated updates must not duplicate signal handlers.
+    gtk_selection_model_select_item(models[0], 17, TRUE);
+    g_assert_true(gtk_selection_model_is_selected(models[1], 17));
+    gtk_selection_model_select_range(models[1], 20, 5, FALSE);
+    for (guint row = 20; row < 25; row++) g_assert_true(gtk_selection_model_is_selected(models[0], row));
+    GtkAdjustment *a = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(grids[0]));
+    GtkAdjustment *b = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(grids[1]));
+    gtk_adjustment_configure(a, 0, 0, 1000, 10, 100, 100);
+    gtk_adjustment_configure(b, 0, 0, 1000, 10, 100, 100);
+    gtk_adjustment_set_value(a, 250);
+    g_assert_cmpfloat(gtk_adjustment_get_value(b), ==, 250);
+    gtk_adjustment_set_value(b, 500);
+    g_assert_cmpfloat(gtk_adjustment_get_value(a), ==, 500);
+    GtkAdjustment *h1 = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(grids[0]));
+    GtkAdjustment *h2 = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(grids[1]));
+    gtk_adjustment_configure(h1, 0, 0, 1000, 10, 100, 100);
+    gtk_adjustment_configure(h2, 0, 0, 1000, 10, 100, 100);
+    gtk_adjustment_set_value(h2, 300);
+    g_assert_cmpfloat(gtk_adjustment_get_value(h1), ==, 0);
+    g_object_unref(box);
+}
+
 static void setup(GtkSignalListItemFactory *factory, GObject *object, gpointer data) {
     (void)factory; (void)data;
     GtkWidget *cell = gtk_inscription_new(NULL);
@@ -97,6 +186,7 @@ static gboolean verify(gpointer data) {
     /* The local CSS font must reach actual recycled cell widgets. */
     g_assert_cmpint(pango_font_description_get_size(font), ==, 20 * PANGO_SCALE);
     (void)data;
+    test_header_menu();
     GtkWidget *cell = find(grid, GTK_TYPE_INSCRIPTION);
     g_assert_nonnull(cell);
     GtkTooltip *tooltip = g_object_new(GTK_TYPE_TOOLTIP, NULL);
@@ -308,6 +398,7 @@ static void test_virtual_table_list(void) {
 int main(void) {
     gtk_init();
     test_shortcuts();
+    test_frozen_grids();
     test_session_layout();
     test_virtual_table_list();
     GtkWidget *editor = gtk_text_view_new();
@@ -335,6 +426,7 @@ int main(void) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid), view);
     sdbui_value_install(grid, NULL, preview, activate, NULL);
     sdbui_value_filters(grid, prepare_cell_filter, apply_cell_filter, destroy_cell_filter);
+    sdbui_grid_headers(grid, prepare_header, apply_header, destroy_header);
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(setup), NULL);
     g_signal_connect(factory, "bind", G_CALLBACK(bind), NULL);
@@ -354,6 +446,6 @@ int main(void) {
     g_main_loop_unref(loop);
     settle_layout();
     g_assert_cmpuint(filter_destroyed, ==, 1);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection, cell filter submenu\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection, cell filter submenu, header context menu, frozen grid scrolling and selection\n");
     return 0;
 }

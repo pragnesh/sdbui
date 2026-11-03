@@ -27,4 +27,8 @@ void sdbui_table_list_update(void *root, const char *const *labels, int replace,
 typedef void *(*SDBUIFilterPrepare)(void *context, uint32_t row, uint32_t column);
 typedef void (*SDBUIFilterApply)(void *snapshot, int32_t command);
 void sdbui_value_filters(void *grid, SDBUIFilterPrepare prepare, SDBUIFilterApply apply, SDBUIValueDestroy destroy);
+typedef void *(*SDBUIHeaderPrepare)(void *context, uint32_t column);
+typedef char *(*SDBUIHeaderApply)(void *snapshot, int32_t command);
+void sdbui_grid_headers(void *grid, SDBUIHeaderPrepare prepare, SDBUIHeaderApply apply, SDBUIValueDestroy destroy);
+void sdbui_grid_pair(void *root);
 #endif

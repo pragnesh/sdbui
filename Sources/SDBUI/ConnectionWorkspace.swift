@@ -174,11 +174,7 @@ struct ConnectionWorkspaceView: View {
                     HStack(spacing: 4) {
                         ForEach(workspace.tabs, id: \.id) { tab in
                             HStack(spacing: 2) {
-                                Button(tab.title + (tab.model.isConnectionLost ? " · Lost" : "")) {
-                                    workspace.select(tab.id)
-                                }
-                                .buttonStyle(tab.id == workspace.selectedID ? .bordered : .borderless)
-                                .fixedSize()
+                                ConnectionTabButton(tab: tab, selected: tab.id == workspace.selectedID) { workspace.select(tab.id) }
                                 Button(action: { workspace.close(tab.id) }) {
                                     #if canImport(GtkBackend)
                                         Text("×").inspect { label in
@@ -224,5 +220,23 @@ struct ConnectionWorkspaceView: View {
         }
         .workspaceShortcuts(workspace)
         .persistingWorkspaceWindow(workspace)
+    }
+}
+
+struct ConnectionTabButton: View {
+    let tab: ConnectionWorkspace.Tab
+    let selected: Bool
+    let select: @MainActor @Sendable () -> Void
+    @State private var revision = 0
+    var body: some View {
+        let _ = revision
+        let _ = tab.model.watch("connection-tab-indicator", of: { [tab.model.isRunning, tab.model.isConnectionLost] }) { revision &+= 1 }
+        HStack(spacing: 4) {
+            if tab.model.isConnectionLost { Text("⚠ Lost").foregroundColor(.red).fontWeight(.bold).fixedSize() }
+            else if tab.model.isRunning { Text("● Running").foregroundColor(.orange).font(.caption).fixedSize() }
+            Button(tab.title, action: select)
+                .buttonStyle(selected ? .bordered : .borderless)
+                .fixedSize()
+        }
     }
 }

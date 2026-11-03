@@ -13,6 +13,7 @@ struct MainWindow: View {
             TopBar(model: model)
                 .padding(8)
             Divider()
+            DisconnectConfirmation(model: model)
             if model.isConnectionLost {
                 HStack(spacing: 8) {
                     Text(model.isConnecting ? "Reconnecting…" : "Connection lost. Your SQL is preserved.")
@@ -88,7 +89,7 @@ struct TableSidebar: View {
                         .foregroundColor(.gray)
                 }
                 Spacer()
-                Button("Disconnect") { model.disconnect() }
+                Button("Disconnect") { model.requestDisconnect() }
                     .fixedSize()
             }
             Divider()
@@ -289,7 +290,30 @@ struct PaneGrid: View {
         let _ = revision
         let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
         if pane.hasColumns {
-            grid().queryGridFontSize(model.queryFontSize)
+            VStack(alignment: .leading, spacing: 4) {
+                if !pane.hiddenColumns.isEmpty || pane.frozenCount > 0 {
+                    HStack {
+                        if !pane.hiddenColumns.isEmpty {
+                            Button("Show all columns") { _ = pane.headerCommand(8, column: pane.visibleColumns[0]) }
+                        }
+                        if pane.frozenCount > 0 {
+                            Button("Unfreeze columns") { _ = pane.headerCommand(7, column: pane.visibleColumns[0]) }
+                        }
+                        Spacer()
+                    }
+                }
+                if pane.frozenCount > 0 {
+                    HStack(spacing: 0) {
+                        grid(columns: pane.frozenColumns)
+                            .frame(width: Double(min(400, pane.frozenColumns.reduce(0) { $0 + pane.columns[$1].width })))
+                        Divider()
+                        grid(columns: pane.scrollingColumns).frame(maxWidth: .infinity)
+                    }
+                    .synchronizingFrozenGrid()
+                } else {
+                    grid(columns: pane.visibleColumns)
+                }
+            }
         } else {
             VStack(alignment: .leading) {
                 HStack {
@@ -301,26 +325,32 @@ struct PaneGrid: View {
         }
     }
 
-    private func grid() -> some View {
+    private func grid(columns: [Int]) -> some View {
         let pane = pane
         let onSort: (@MainActor (DataGridSort) -> Void)?
         if pane.isSortable {
-            onSort = { sort in pane.requestSort(sort) }
+            onSort = { sort in
+                guard columns.indices.contains(sort.column) else { return }
+                pane.requestSort(DataGridSort(column: columns[sort.column], ascending: sort.ascending))
+            }
         } else {
             onSort = nil
         }
         let grid = DataGrid(
-            columns: pane.columns,
+            columns: columns.map { pane.columns[$0] },
             rowCount: pane.result?.rowCount ?? 0,
             contentRevision: pane.revision,
-            sort: pane.sort,
+            sort: pane.sort.flatMap { sort in columns.firstIndex(of: sort.column).map { DataGridSort(column: $0, ascending: sort.ascending) } },
             onSort: onSort,
             copyCommands: ResultCopy.titles,
-            onCopy: { request in pane.copyText(for: request) },
-            cell: { row, column in pane.cell(row: row, column: column) }
+            onCopy: { request in
+                pane.copyText(for: DataGridCopyRequest(command: request.command, rows: request.rows,
+                    column: request.column.flatMap { columns.indices.contains($0) ? columns[$0] : nil }))
+            },
+            cell: { row, column in pane.cell(row: row, column: columns[column]) }
         )
         #if canImport(GtkBackend)
-            return grid.inspectingValues(in: pane, model: model)
+            return grid.inspectingValues(in: pane, model: model, columns: columns).queryGridFontSize(model.queryFontSize)
         #else
             return grid
         #endif
@@ -414,6 +444,7 @@ struct FilterBar: View {
 struct ContentPager: View {
     var model: BrowserModel
     @State private var revision = 0
+    @State private var page = ""
 
     var body: some View {
         let _ = revision
@@ -422,7 +453,7 @@ struct ContentPager: View {
             of: {
                 [
                     model.isBrowsing ? 1 : 0, model.contentOffset, model.contentHasMore ? 1 : 0,
-                    model.queryPane.revision,
+                    model.queryPane.revision, model.selectedTableID.flatMap { model.rowEstimates[$0] }.map(Int.init) ?? -1, model.isRunning ? 1 : 0,
                 ]
             }
         ) {
@@ -431,12 +462,18 @@ struct ContentPager: View {
         if model.isBrowsing {
             HStack {
                 Button("◀ Previous") { model.showContentPage(next: false) }
-                    .disabled(model.contentOffset == 0)
+                    .disabled(!model.canRun || model.contentOffset == 0)
                     .fixedSize()
                 Text(model.contentRowsLabel)
                     .fixedSize()
+                Text("Page \(model.contentPage)").font(.caption)
+                TextField("Go to page", text: $page)
+                    .onSubmit { model.goToContentPage(page) }
+                    .frame(width: 100)
+                    .disabled(!model.canRun)
+                Button("Go") { model.goToContentPage(page) }.disabled(!model.canRun)
                 Button("Next ▶") { model.showContentPage(next: true) }
-                    .disabled(!model.contentHasMore)
+                    .disabled(!model.canRun || !model.contentHasMore)
                     .fixedSize()
                 Spacer()
             }

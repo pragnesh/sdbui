@@ -87,6 +87,7 @@ final class BrowserModel {
     func refreshActiveView() {
         guard canUseConnection, !isRunning else { return }
         refreshTables()
+        rowEstimates = [:]
         loadedTables = [:]
         if selectedTab == .query, isBrowsing, let table = selectedTable { loadContent(table) }
         else { loadCurrentTab() }
@@ -225,13 +226,38 @@ final class BrowserModel {
         libraryFeedback = "Loaded into the editor. Choose Run All or Ctrl+Enter to execute."
     }
 
-    private func recordHistory(_ statement: String, connectionTitle: String) {
+    private func recordHistory(_ statement: String, connectionTitle: String) -> UUID? {
         do {
-            try queryLibrary.record(sql: statement, connection: connectionTitle)
+            let id = try queryLibrary.record(sql: statement, connection: connectionTitle)
             libraryRevision += 1
+            return id
         } catch {
             libraryFeedback = "History could not be saved: \(error)"
+            return nil
         }
+    }
+
+    private func finishHistory(_ id: UUID?, elapsed: Duration, result: QueryResult?) {
+        guard let id else { return }
+        let parts = elapsed.components
+        do {
+            try queryLibrary.completeHistory(id, duration: Double(parts.seconds) + Double(parts.attoseconds) / 1e18,
+                rowCount: result.map { $0.columns.isEmpty ? $0.rowsAffected : Int64($0.rowCount) } ?? nil,
+                succeeded: result != nil)
+            libraryRevision += 1
+        } catch { libraryFeedback = "History outcome could not be saved: \(error)" }
+    }
+
+    @ObservationIgnored private(set) var statementLog: [String] = [] { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var pendingDisconnect = false { didSet { stateChanged() } }
+    func requestDisconnect() {
+        if isRunning { pendingDisconnect = true } else { disconnect() }
+    }
+    func cancelDisconnect() { pendingDisconnect = false }
+    func confirmDisconnect() {
+        pendingDisconnect = false
+        cancelQuery()
+        disconnect()
     }
 
     func clearQueryHistory() {
@@ -592,6 +618,8 @@ final class BrowserModel {
     }
 
     func disconnect() {
+        pendingDisconnect = false
+        statementLog = []
         saveDraft()
         draftKey = nil
         restorableProfileID = nil
@@ -626,6 +654,8 @@ final class BrowserModel {
         queryStatus = nil
         queryErrorLocation = nil
         tables = []
+        rowEstimates = [:]
+        estimateLoads = []
         selectedDatabase = nil
         selectedTableID = nil
         loadedTables = [:]
@@ -793,7 +823,8 @@ final class BrowserModel {
 
     /// Reload what the current tab shows.
     func refreshCurrentTab() {
-        guard canUseConnection else { return }
+        guard canRun else { return }
+        if let id = selectedTableID { rowEstimates.removeValue(forKey: id) }
         if selectedTab == .query {
             if isBrowsing, let table = selectedTable {
                 loadContent(table)
@@ -878,6 +909,7 @@ final class BrowserModel {
         let displayedSQL = dialect.browseSQL(
             table, filter: contentFilter, orderBy: orderBy, limit: pageSize,
             offset: contentOffset)
+        loadRowEstimate(table)
         browseSQL = displayedSQL
         isBrowsing = true
         isRunning = true
@@ -909,15 +941,48 @@ final class BrowserModel {
         }
     }
 
+    @ObservationIgnored private(set) var rowEstimates: [String: Int64] = [:] { didSet { stateChanged() } }
+    @ObservationIgnored private var estimateLoads: Set<String> = []
+    private func loadRowEstimate(_ table: TableInfo) {
+        guard rowEstimates[table.id] == nil, !estimateLoads.contains(table.id),
+              let infoSQL = dialect.tableInfoSQL(table) else { return }
+        estimateLoads.insert(table.id)
+        let revision = sessionRevision
+        Task {
+            let outcome = await fetch(infoSQL)
+            guard revision == sessionRevision else { return }
+            estimateLoads.remove(table.id)
+            if case .success(let result) = outcome,
+               let index = result.columns.firstIndex(where: { $0.name == "Rows (estimate)" }),
+               let text = result.cell(0, index), let value = Int64(text), value >= 0 {
+                rowEstimates[table.id] = value
+            }
+        }
+    }
+    var contentPage: Int { contentOffset / pageSize + 1 }
+    func goToContentPage(_ text: String) {
+        guard canRun, isBrowsing, let table = selectedTable else { return }
+        guard let page = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)), page > 0,
+              page - 1 <= (Int.max - pageSize) / pageSize else {
+            errorMessage = "Enter a positive page number within the supported range."
+            return
+        }
+        contentOffset = (page - 1) * pageSize
+        loadContent(table)
+    }
+
     var contentRowsLabel: String {
         let count = queryPane.result?.rowCount ?? 0
         guard count > 0 else { return contentFilter == nil ? "No rows" : "No matching rows" }
-        let more = contentHasMore ? "+" : ""
-        return "Rows \(contentOffset + 1)–\(contentOffset + count)\(more)"
+        let range = "Rows \(contentOffset + 1)–\(contentOffset + count)"
+        if contentFilter == nil, let id = selectedTableID, let estimate = rowEstimates[id], estimate >= Int64(contentOffset + count) {
+            return range + " of ~\(estimate.formatted()) (estimate)"
+        }
+        return range + (contentHasMore ? "+" : "")
     }
 
     private func sortContent(by sort: DataGridSort) {
-        guard canUseConnection else { return }
+        guard canRun else { return }
         guard let table = selectedTable, sort != contentSort else { return }
         contentSort = sort
         contentOffset = 0
@@ -925,7 +990,7 @@ final class BrowserModel {
     }
 
     func showContentPage(next: Bool) {
-        guard canUseConnection else { return }
+        guard canRun, isBrowsing, !next || contentHasMore, contentOffset <= Int.max - pageSize else { return }
         guard let table = selectedTable else { return }
         contentOffset = max(0, contentOffset + (next ? pageSize : -pageSize))
         loadContent(table)
@@ -1133,6 +1198,7 @@ final class BrowserModel {
         pendingQuery = nil
         queryCancellationRequested = false
         queryStatus = QueryStatus(text: "Running…")
+        statementLog = []
         let runMaxRows = maxRows ?? 10_000
         // Running SQL by hand leaves table browsing (filter bar, pager,
         // server-side sorting); header clicks then sort in memory.
@@ -1153,6 +1219,8 @@ final class BrowserModel {
                 if queryCancellationRequested {
                     isRunning = false
                     statusMessage = "Query cancelled"
+                    statementLog.append("Cancelled before statement \(index + 1)/\(statements.count); remaining statements not executed.")
+                    if let shown { queryPane.show(shown) }
                     queryStatus = .failed("Execution stopped. Statements already completed were not rolled back.",
                         elapsed: started.duration(to: clock.now), cancelled: true)
                     return
@@ -1162,16 +1230,25 @@ final class BrowserModel {
                     ? "Running statement \(index + 1) of \(statements.count)…" : "Running…"
                 // Record only statements we attempt, including failures, never table loads or health probes.
                 queryStatus = QueryStatus(text: statements.count > 1 ? "Running statement \(index + 1) of \(statements.count)…" : "Running…")
-                recordHistory(statement.text, connectionTitle: historyConnection)
+                let historyID = recordHistory(statement.text, connectionTitle: historyConnection)
+                let statementStarted = clock.now
                 let outcome = await fetch(statement.text, maxRows: runMaxRows, readOnly: readOnly)
+                // Persist the attempted statement's outcome even if disconnect or
+                // connection loss invalidated this run's UI while it was fetching.
+                finishHistory(historyID, elapsed: clock.now - statementStarted, result: try? outcome.get())
                 guard revision == sessionRevision, canUseConnection else { return }
                 switch outcome {
                     case .success(let result):
+                        let summary = QueryStatus.completed(result, elapsed: result.elapsed, statements: 1, maxRows: runMaxRows)
+                        statementLog.append("✓ Statement \(index + 1)/\(statements.count): \(summary.text)")
                         elapsed += result.elapsed
                         if !result.columns.isEmpty || shown?.columns.isEmpty != false {
                             shown = result
                         }
                     case .failure(let error):
+                        statementLog.append("✗ Statement \(index + 1)/\(statements.count): \(error)")
+                        if index + 1 < statements.count { statementLog.append("\(statements.count - index - 1) remaining statement(s) not executed.") }
+                        if let shown { queryPane.show(shown) }
                         isRunning = false
                         let message = statements.count > 1
                             ? "Statement \(index + 1) of \(statements.count) failed: \(error)" : "\(error)"

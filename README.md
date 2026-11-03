@@ -108,6 +108,37 @@ cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
 For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current single-column filter, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
 
+Right-click a **column header** to sort ascending or descending, copy its name
+or all loaded values, hide it, or auto-fit its width from a sample of loaded
+rows. **Freeze through this column** keeps the leading visible columns in a
+separate pane while the remaining columns scroll horizontally. Both panes
+share vertical scrolling and row selection. At least one column stays in the
+scrolling pane. **Unfreeze columns** and **Show all columns** restore the layout;
+layout choices survive paging and reset when the result schema changes.
+Column values, cell previews and filters always refer to their original columns.
+Copy Rows and CSV/SQL copy continue to include all result columns.
+
+The table pager shows the current page and supports **Go to page**. When available,
+it includes the database's row estimate, explicitly marked with `~` and
+`(estimate)`. Estimates can be stale and are omitted for filtered results;
+page navigation uses the actual fetched rows. No full-table count is required.
+
+**Run All** includes a collapsible statement log with success/failure, row counts,
+duration and truncation warnings for completed statements. Execution stops at
+the first error, labels unexecuted statements, and retains the last successful
+result. Completed statements are not automatically rolled back.
+
+History records duration, returned/affected rows and success or failure, with a
+**This connection only** filter. Double-click an entry (or press Enter on it)
+to load its SQL into the editor. Older history is preserved during migration;
+entries without recorded outcomes show **Outcome unavailable**.
+
+Connection tabs show **Running** for active queries and a red **Lost** marker
+when disconnected unexpectedly. Disconnecting while a query runs requires
+confirmation and requests cancellation while preserving editor SQL. The initial
+connection screen provides driver installation commands and **Re-scan drivers**;
+an empty Query view lists the main keyboard shortcuts.
+
 Structure and Table Info use `information_schema` / `pg_catalog` for MySQL,
 MariaDB and PostgreSQL; other databases show the columns ADBC reports.
 

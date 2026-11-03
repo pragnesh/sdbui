@@ -108,6 +108,16 @@ struct ConnectionForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(model.selectedProfileID == nil ? "New connection" : "Connection settings").font(.title2)
+            if model.drivers.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Install a database driver to get started").font(.headline)
+                    Text("Run one of these commands in a terminal:")
+                    Text("dbc install postgresql\ndbc install mysql\ndbc install sqlite\ndbc install duckdb")
+                        .font(.system(size: 12, design: .monospaced)).textSelectionEnabled()
+                    Button("Re-scan drivers") { model.reloadDiscovery() }
+                }
+                .padding(8)
+            }
             Text("Name (required to save; use Group/Name to organize favorites)")
             TextField("Work/Production", text: field(\.name))
             Text("Environment label")

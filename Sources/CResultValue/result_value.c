@@ -11,6 +11,9 @@ typedef struct {
     SDBUIFilterPrepare filter_prepare;
     SDBUIFilterApply filter_apply;
     SDBUIValueDestroy filter_destroy;
+    SDBUIHeaderPrepare header_prepare;
+    SDBUIHeaderApply header_apply;
+    SDBUIValueDestroy header_destroy;
 } ValueSource;
 
 typedef struct {
@@ -648,4 +651,178 @@ void sdbui_table_list_update(void *root, const char *const *labels, int replace,
         gtk_widget_activate_action(list->list, "list.scroll-to-item", "u", selected);
 #endif
     }
+}
+
+/* Header actions use snapshots just like cell filters, so an open menu cannot
+ * act on a newly loaded result or a different column projection. */
+typedef struct { void *snapshot; SDBUIHeaderApply apply; SDBUIValueDestroy destroy; GtkWidget *grid; GtkWidget *popover; } HeaderAction;
+static void header_action_free(gpointer data) {
+    HeaderAction *action = data;
+    if (action->destroy) action->destroy(action->snapshot);
+    g_object_unref(action->grid);
+    g_free(action);
+}
+static void header_activated(GSimpleAction *action, GVariant *parameter, gpointer data) {
+    /* Changing the projection may destroy this view on the next model update.
+     * Detach its popup before invoking Swift, while retaining the action's
+     * snapshot until dispatch completes. */
+    g_object_ref(action);
+    HeaderAction *target = data;
+    gtk_popover_popdown(GTK_POPOVER(target->popover));
+    if (gtk_widget_get_parent(target->popover)) gtk_widget_unparent(target->popover);
+    char *text = target->apply(target->snapshot, g_variant_get_int32(parameter));
+    if (text) { gdk_clipboard_set_text(gtk_widget_get_clipboard(target->grid), text); free(text); }
+    g_object_unref(action);
+}
+static gboolean unparent_header(gpointer data) {
+    GtkWidget *popover = data;
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), NULL);
+    gtk_widget_insert_action_group(popover, "header", NULL);
+    if (gtk_widget_get_parent(popover)) gtk_widget_unparent(popover);
+    return G_SOURCE_REMOVE;
+}
+static void header_closed(GtkPopover *popover, gpointer data) {
+    (void)data;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, unparent_header, g_object_ref(popover), g_object_unref);
+}
+static void header_pressed(GtkGestureClick *gesture, gint presses, gdouble x, gdouble y, gpointer data) {
+    (void)presses;
+    GtkWidget *grid = data;
+    GtkWidget *view = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    GtkWidget *hit = gtk_widget_pick(view, x, y, GTK_PICK_DEFAULT);
+    /* GTK's public widget tree exposes the header's title buttons in column order. */
+    GtkWidget *title = hit;
+    while (title && gtk_widget_get_parent(title) &&
+           strcmp(gtk_widget_get_css_name(gtk_widget_get_parent(title)), "header") != 0) {
+        title = gtk_widget_get_parent(title);
+    }
+    if (!title || !gtk_widget_get_parent(title)) return;
+    guint column = 0;
+    for (GtkWidget *sibling = gtk_widget_get_first_child(gtk_widget_get_parent(title)); sibling && sibling != title;
+         sibling = gtk_widget_get_next_sibling(sibling)) column++;
+    ValueSource *source = g_object_get_data(G_OBJECT(grid), "sdbui-values");
+    if (!source || !source->header_prepare) return;
+    void *snapshot = source->header_prepare(source->context, column);
+    if (!snapshot) return;
+    HeaderAction *target = g_new0(HeaderAction, 1);
+    target->snapshot = snapshot; target->apply = source->header_apply;
+    target->destroy = source->header_destroy; target->grid = g_object_ref(grid);
+    GSimpleActionGroup *group = g_simple_action_group_new();
+    GSimpleAction *action = g_simple_action_new("apply", G_VARIANT_TYPE_INT32);
+    g_signal_connect(action, "activate", G_CALLBACK(header_activated), target);
+    g_object_set_data_full(G_OBJECT(action), "sdbui-header-target", target, header_action_free);
+    g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
+    g_object_unref(action);
+    GMenu *menu = g_menu_new();
+    const char *names[] = { "Sort ascending", "Sort descending", "Copy column name", "Copy column values (loaded rows)",
+        "Hide column", "Auto-fit width (loaded rows)", "Freeze through this column", "Unfreeze columns", "Show all columns" };
+    for (guint index = 0; index < G_N_ELEMENTS(names); index++) {
+        GMenuItem *item = g_menu_item_new(names[index], NULL);
+        g_menu_item_set_action_and_target(item, "header.apply", "i", (gint)index);
+        g_menu_append_item(menu, item); g_object_unref(item);
+    }
+    GtkWidget *popover = gtk_popover_menu_new_from_model(G_MENU_MODEL(menu));
+    target->popover = popover;
+    g_object_unref(menu);
+    gtk_widget_insert_action_group(popover, "header", G_ACTION_GROUP(group)); g_object_unref(group);
+    gtk_widget_set_parent(popover, view);
+    GdkRectangle rect = { (int)x, (int)y, 1, 1 };
+    gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
+    g_signal_connect(popover, "closed", G_CALLBACK(header_closed), NULL);
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+void sdbui_grid_headers(void *grid, SDBUIHeaderPrepare prepare, SDBUIHeaderApply apply, SDBUIValueDestroy destroy) {
+    ValueSource *source = g_object_get_data(G_OBJECT(grid), "sdbui-values");
+    if (!source) return;
+    source->header_prepare = prepare; source->header_apply = apply; source->header_destroy = destroy;
+    GtkWidget *view = find_column_view(grid);
+    if (!view || g_object_get_data(G_OBJECT(view), "sdbui-header-gesture")) return;
+    GtkGesture *gesture = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), GDK_BUTTON_SECONDARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gesture), GTK_PHASE_CAPTURE);
+    g_signal_connect(gesture, "pressed", G_CALLBACK(header_pressed), grid);
+    gtk_widget_add_controller(view, GTK_EVENT_CONTROLLER(gesture));
+    g_object_set_data(G_OBJECT(view), "sdbui-header-gesture", GINT_TO_POINTER(1));
+}
+
+/* Two virtual grids keep their own lazy models and copy state, but mirror
+ * selection and vertical adjustments. Horizontal scrolling stays independent. */
+typedef struct { GtkAdjustment *left, *right; GtkSelectionModel *a, *b; gboolean updating; } GridPair;
+static void pair_free(gpointer data) {
+    GridPair *pair = data;
+    g_signal_handlers_disconnect_by_data(pair->left, pair);
+    g_signal_handlers_disconnect_by_data(pair->right, pair);
+    g_signal_handlers_disconnect_by_data(pair->a, pair);
+    g_signal_handlers_disconnect_by_data(pair->b, pair);
+    g_object_unref(pair->left); g_object_unref(pair->right);
+    g_object_unref(pair->a); g_object_unref(pair->b); g_free(pair);
+}
+static void pair_scroll(GtkAdjustment *source, gpointer data) {
+    GridPair *pair = data;
+    if (pair->updating) return;
+    pair->updating = TRUE;
+    gtk_adjustment_set_value(source == pair->left ? pair->right : pair->left, gtk_adjustment_get_value(source));
+    pair->updating = FALSE;
+}
+static void pair_selection(GtkSelectionModel *source, guint position, guint count, gpointer data) {
+    (void)position; (void)count;
+    GridPair *pair = data;
+    if (pair->updating) return;
+    pair->updating = TRUE;
+    GtkSelectionModel *target = source == pair->a ? pair->b : pair->a;
+    GtkBitset *selected = gtk_selection_model_get_selection(source);
+    GtkBitset *mask = gtk_bitset_new_range(0, g_list_model_get_n_items(G_LIST_MODEL(target)));
+    gtk_selection_model_set_selection(target, selected, mask);
+    gtk_bitset_unref(selected); gtk_bitset_unref(mask);
+    pair->updating = FALSE;
+}
+static void find_grids(GtkWidget *root, GtkWidget **left, GtkWidget **right) {
+    if (g_object_get_data(G_OBJECT(root), "sdbui-values")) {
+        if (!*left) *left = root; else if (!*right) *right = root;
+        return;
+    }
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child)) find_grids(child, left, right);
+}
+static GtkWidget *grid_header(GtkWidget *root) {
+    if (strcmp(gtk_widget_get_css_name(root), "header") == 0) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = grid_header(child);
+        if (found) return found;
+    }
+    return NULL;
+}
+void sdbui_grid_pair(void *root) {
+    GtkWidget *left = NULL, *right = NULL;
+    find_grids(root, &left, &right);
+    if (!left || !right || !GTK_IS_SCROLLED_WINDOW(left) || !GTK_IS_SCROLLED_WINDOW(right)) return;
+    GtkWidget *a = find_column_view(left), *b = find_column_view(right);
+    if (!a || !b) return;
+    GtkWidget *ha = grid_header(a), *hb = grid_header(b);
+    if (ha && hb) {
+        int minimum, height_a, height_b;
+        gtk_widget_set_size_request(ha, -1, -1);
+        gtk_widget_set_size_request(hb, -1, -1);
+        gtk_widget_measure(ha, GTK_ORIENTATION_VERTICAL, -1, &minimum, &height_a, NULL, NULL);
+        gtk_widget_measure(hb, GTK_ORIENTATION_VERTICAL, -1, &minimum, &height_b, NULL, NULL);
+        gtk_widget_set_size_request(ha, -1, MAX(height_a, height_b));
+        gtk_widget_set_size_request(hb, -1, MAX(height_a, height_b));
+    }
+    GridPair *previous = g_object_get_data(G_OBJECT(root), "sdbui-grid-pair");
+    GtkSelectionModel *ma = gtk_column_view_get_model(GTK_COLUMN_VIEW(a)), *mb = gtk_column_view_get_model(GTK_COLUMN_VIEW(b));
+    if (previous && previous->a == ma && previous->b == mb) return;
+    GridPair *pair = g_new0(GridPair, 1);
+    pair->left = g_object_ref(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(left)));
+    pair->right = g_object_ref(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(right)));
+    pair->a = g_object_ref(ma); pair->b = g_object_ref(mb);
+    g_object_set_data_full(G_OBJECT(root), "sdbui-grid-pair", pair, pair_free);
+    g_signal_connect(pair->left, "value-changed", G_CALLBACK(pair_scroll), pair);
+    g_signal_connect(pair->right, "value-changed", G_CALLBACK(pair_scroll), pair);
+    g_signal_connect(pair->a, "selection-changed", G_CALLBACK(pair_selection), pair);
+    g_signal_connect(pair->b, "selection-changed", G_CALLBACK(pair_selection), pair);
+    /* Reserve matching scrollbar space, even when only one side is wide. */
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(left), GTK_POLICY_ALWAYS, GTK_POLICY_EXTERNAL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(right), GTK_POLICY_ALWAYS, GTK_POLICY_ALWAYS);
+    pair_scroll(pair->right, pair);
+    pair_selection(pair->b, 0, 0, pair);
 }

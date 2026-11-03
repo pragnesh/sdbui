@@ -68,17 +68,21 @@ import SwiftCrossUI
 private final class GridValueSource {
     let pane: ResultPane
     weak var model: BrowserModel?
-    init(_ pane: ResultPane, model: BrowserModel) { self.pane = pane; self.model = model }
+    let columns: [Int]
+    init(_ pane: ResultPane, model: BrowserModel, columns: [Int]) { self.pane = pane; self.model = model; self.columns = columns }
+    func column(_ index: UInt32) -> Int? { columns.indices.contains(Int(index)) ? columns[Int(index)] : nil }
 }
 
 private let valuePreview: SDBUIValuePreview = { context, row, column in
     let preview: String? = MainActor.assumeIsolated {
         guard let context else { return nil }
-        let pane = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue().pane
-        guard let result = pane.result, Int(row) < result.rowCount, result.columns.indices.contains(Int(column)) else { return nil }
+        let source = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue()
+        guard let column = source.column(column) else { return nil }
+        let pane = source.pane
+        guard let result = pane.result, Int(row) < result.rowCount else { return nil }
         // Decode only the hovered cell. The preview stays bounded even when the
         // viewer can expose a multi-megabyte value.
-        return ResultValue(raw: result.cell(Int(row), Int(column), maxLength: 2_001)).tooltip
+        return ResultValue(raw: result.cell(Int(row), column, maxLength: 2_001)).tooltip
     }
     // Only Sendable Swift text leaves the isolated closure; the pointer belongs
     // to the synchronous C caller, which frees it after setting the tooltip.
@@ -88,10 +92,12 @@ private let valuePreview: SDBUIValuePreview = { context, row, column in
 private let activateValue: SDBUIValueActivate = { context, grid, row, column in
     MainActor.assumeIsolated {
         guard let context, let grid else { return }
-        let pane = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue().pane
-        guard let result = pane.result, Int(row) < result.rowCount, result.columns.indices.contains(Int(column)) else { return }
-        let metadata = result.columns[Int(column)]
-        let value = ResultValue(raw: result.cell(Int(row), Int(column), maxLength: nil))
+        let source = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue()
+        guard let column = source.column(column) else { return }
+        let pane = source.pane
+        guard let result = pane.result, Int(row) < result.rowCount else { return }
+        let metadata = result.columns[column]
+        let value = ResultValue(raw: result.cell(Int(row), column, maxLength: nil))
         let title = "\(metadata.name) · Row \(Int(row) + 1)" + (metadata.type.isEmpty ? "" : " · \(metadata.type)")
         if let formatted = value.formattedJSON {
             sdbui_value_show(grid, title, value.raw ?? "", value.raw?.utf8.count ?? 0, formatted, value.raw == nil ? 1 : 0)
@@ -115,8 +121,8 @@ private let prepareFilter: SDBUIFilterPrepare = { context, row, column in
     let prepared: PreparedCellFilter? = MainActor.assumeIsolated {
         guard let context else { return nil }
         let source = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue()
-        guard let model = source.model,
-              let target = model.cellFilterTarget(in: source.pane, row: Int(row), column: Int(column)) else { return nil }
+        guard let model = source.model, let column = source.column(column),
+              let target = model.cellFilterTarget(in: source.pane, row: Int(row), column: column) else { return nil }
         return PreparedCellFilter(model: model, target: target)
     }
     return prepared.map { Unmanaged.passRetained($0).toOpaque() }
@@ -132,14 +138,56 @@ private let destroyFilter: SDBUIValueDestroy = { context in
     if let context { Unmanaged<PreparedCellFilter>.fromOpaque(context).release() }
 }
 
-extension DataGrid {
-    func inspectingValues(in pane: ResultPane, model: BrowserModel) -> some View {
+@MainActor
+private final class PreparedHeader {
+    let pane: ResultPane
+    let column: Int
+    let revision: Int
+    init(pane: ResultPane, column: Int) { self.pane = pane; self.column = column; revision = pane.revision }
+}
+private let prepareHeader: SDBUIHeaderPrepare = { context, column in
+    let prepared: PreparedHeader? = MainActor.assumeIsolated {
+        guard let context else { return nil }
+        let source = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue()
+        guard let column = source.column(column) else { return nil }
+        return PreparedHeader(pane: source.pane, column: column)
+    }
+    return prepared.map { Unmanaged.passRetained($0).toOpaque() }
+}
+private let applyHeader: SDBUIHeaderApply = { context, command in
+    let text: String? = MainActor.assumeIsolated {
+        guard let context else { return nil }
+        let target = Unmanaged<PreparedHeader>.fromOpaque(context).takeUnretainedValue()
+        guard target.pane.revision == target.revision else { return nil }
+        return target.pane.headerCommand(command, column: target.column)
+    }
+    return text.flatMap { strdup($0) }
+}
+private let destroyHeader: SDBUIValueDestroy = { context in
+    if let context { Unmanaged<PreparedHeader>.fromOpaque(context).release() }
+}
+
+extension View {
+    @ViewBuilder
+    func synchronizingFrozenGrid() -> some View {
         inspect([.onCreate, .afterUpdate]) { widget in
-            let context = Unmanaged.passRetained(GridValueSource(pane, model: model)).toOpaque()
-            sdbui_value_install(UnsafeMutableRawPointer(widget.widgetPointer), context,
-                                valuePreview, activateValue, destroyValueSource)
-            sdbui_value_filters(UnsafeMutableRawPointer(widget.widgetPointer), prepareFilter, applyFilter, destroyFilter)
+            sdbui_grid_pair(UnsafeMutableRawPointer(widget.widgetPointer))
         }
     }
 }
+
+extension DataGrid {
+    func inspectingValues(in pane: ResultPane, model: BrowserModel, columns: [Int]) -> some View {
+        inspect([.onCreate, .afterUpdate]) { widget in
+            let context = Unmanaged.passRetained(GridValueSource(pane, model: model, columns: columns)).toOpaque()
+            sdbui_value_install(UnsafeMutableRawPointer(widget.widgetPointer), context,
+                                valuePreview, activateValue, destroyValueSource)
+            sdbui_value_filters(UnsafeMutableRawPointer(widget.widgetPointer), prepareFilter, applyFilter, destroyFilter)
+            sdbui_grid_headers(UnsafeMutableRawPointer(widget.widgetPointer), prepareHeader, applyHeader, destroyHeader)
+        }
+    }
+}
+#else
+import SwiftCrossUI
+extension View { func synchronizingFrozenGrid() -> some View { self } }
 #endif

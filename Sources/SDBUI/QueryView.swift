@@ -24,11 +24,12 @@ struct QueryTab: View {
             }
             QuerySafetyConfirmation(model: model)
             QueryStatusLine(model: model)
+            StatementLogView(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)
             PaneGrid(
                 model: model, pane: model.queryPane, key: "query-grid",
-                emptyText: "Write a query and press Run All, or select a table and choose Show rows."
+                emptyText: "Ctrl+L: focus editor · Ctrl+Enter: run statement or selection · Run All: execute script\nEsc: cancel · F5: refresh · Ctrl+P: find table\nSelect a table and choose Show rows to browse without changing your SQL."
             )
             .frame(maxHeight: .infinity)
             ContentPager(model: model)
