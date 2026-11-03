@@ -24,7 +24,8 @@ with tempfile.TemporaryDirectory(prefix='sdbui-package-smoke-') as directory:
         env.update(APPDIR=str(appdir), GDK_BACKEND='x11', GTK_USE_PORTAL='0')
         command = ['xvfb-run', '-a', str(appdir / 'AppRun')]
     elif package.suffix == '.app':
-        assert list((package / 'Contents/Resources').glob('sdbui_ADBCKit.*/transfer.py')), 'Transfer resources missing'
+        # A macOS .bundle keeps resources under Contents/Resources; Linux bundles are flat.
+        assert list((package / 'Contents/Resources').glob('sdbui_ADBCKit.*/**/transfer.py')), 'Transfer resources missing'
         subprocess.run(['codesign', '--verify', '--deep', '--strict', str(package)], check=True)
         command = [str(package / 'Contents/MacOS/sdbui')]
     else:
