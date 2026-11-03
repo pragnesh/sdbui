@@ -69,6 +69,8 @@ final class QueryStatusIntegrationTests: XCTestCase {
         XCTAssertEqual(model.queryPane.result?.rowCount, 100)
         XCTAssertTrue(model.queryStatus?.truncated == true)
         XCTAssertTrue(model.queryStatus?.text.contains("Max rows (100)") == true)
+        XCTAssertTrue(model.statusLine.truncated)
+        XCTAssertEqual(model.statusLine.text, model.queryStatus?.text)
         let script = "SELECT '🙂';\n SELECT 1 + ;"
         model.setSQL(script)
         model.runQuery()
@@ -78,6 +80,8 @@ final class QueryStatusIntegrationTests: XCTestCase {
         // PostgreSQL's syntax position is a one-based character offset in the submitted statement.
         let endOfExpression = try XCTUnwrap(script.range(of: "+")).upperBound
         XCTAssertEqual(model.queryErrorLocation?.offset, script[..<endOfExpression].unicodeScalars.count)
+        XCTAssertEqual(model.statusLine.error, model.queryStatus?.error)
+        XCTAssertTrue(model.statusLine.text.contains("statement 2/2"))
         let failedStatus = model.queryStatus
         model.refreshTables()
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -87,6 +91,8 @@ final class QueryStatusIntegrationTests: XCTestCase {
         try await waitUntil { !model.isRunning }
         XCTAssertNil(model.queryStatus?.error)
         XCTAssertNil(model.queryErrorLocation)
+        XCTAssertNil(model.statusLine.error)
+        XCTAssertEqual(model.statusLine.text, model.queryStatus?.text)
         XCTAssertFalse(model.queryStatus?.truncated ?? true)
     }
 

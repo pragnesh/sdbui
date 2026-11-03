@@ -28,6 +28,8 @@ void *sdbui_table_list_context(void *root);
 void sdbui_table_list_update(void *root, const char *const *labels, int replace, uint32_t selected, int width, int height);
 typedef void *(*SDBUIFilterPrepare)(void *context, uint32_t row, uint32_t column);
 typedef void (*SDBUIFilterApply)(void *snapshot, int32_t command);
+void sdbui_command_menu(void *root, const char *const *labels, const int32_t *enabled, uint32_t count,
+                        void *context, SDBUIFilterApply apply, SDBUIValueDestroy destroy);
 void sdbui_value_editing(void *grid, int enabled);
 void sdbui_value_filters(void *grid, SDBUIFilterPrepare prepare, SDBUIFilterApply apply, SDBUIValueDestroy destroy);
 typedef void *(*SDBUIHeaderPrepare)(void *context, uint32_t column);

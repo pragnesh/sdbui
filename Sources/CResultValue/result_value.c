@@ -878,3 +878,106 @@ void sdbui_grid_pair(void *root) {
     pair_scroll(pair->right, pair);
     pair_selection(pair->b, 0, 0, pair);
 }
+
+/* Keep menu state alive through dismissal and dispatch outside the popover's
+ * action group, so a Swift redraw cannot destroy an executing menu action. */
+typedef struct {
+    int refs;
+    char **labels;
+    int *enabled;
+    guint count;
+    void *context;
+    SDBUIFilterApply apply;
+    SDBUIValueDestroy destroy;
+} CommandMenuSource;
+typedef struct { CommandMenuSource *source; GtkWidget *popover; guint index; } CommandMenuAction;
+static void command_source_unref(gpointer data) {
+    CommandMenuSource *source = data;
+    if (--source->refs) return;
+    if (source->destroy) source->destroy(source->context);
+    g_strfreev(source->labels); g_free(source->enabled); g_free(source);
+}
+static void command_action_free(gpointer data) {
+    CommandMenuAction *action = data;
+    command_source_unref(action->source); g_free(action);
+}
+static gboolean command_dispatch(gpointer data) {
+    CommandMenuAction *action = data;
+    action->source->apply(action->source->context, (int32_t)action->index);
+    return G_SOURCE_REMOVE;
+}
+static gboolean command_unparent(gpointer data) {
+    GtkWidget *popover = data;
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), NULL);
+    gtk_widget_insert_action_group(popover, "commands", NULL);
+    if (gtk_widget_get_parent(popover)) gtk_widget_unparent(popover);
+    return G_SOURCE_REMOVE;
+}
+static void command_closed(GtkPopover *popover, gpointer data) {
+    (void)data;
+    GtkWidget *button = gtk_widget_get_parent(GTK_WIDGET(popover));
+    if (button && g_object_get_data(G_OBJECT(button), "sdbui-command-popover") == popover)
+        g_object_set_data(G_OBJECT(button), "sdbui-command-popover", NULL);
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, command_unparent, g_object_ref(popover), g_object_unref);
+}
+static void command_activated(GSimpleAction *simple, GVariant *parameter, gpointer data) {
+    (void)simple; (void)parameter;
+    CommandMenuAction *action = data;
+    CommandMenuAction *pending = g_new0(CommandMenuAction, 1);
+    pending->source = action->source; pending->source->refs++;
+    pending->index = action->index;
+    gtk_popover_popdown(GTK_POPOVER(action->popover));
+    /* Queue cleanup first, then run Swift on the next main-loop turn. */
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, command_dispatch, pending, command_action_free);
+}
+static void command_menu_clicked(GtkButton *button, gpointer data) {
+    (void)data;
+    CommandMenuSource *source = g_object_get_data(G_OBJECT(button), "sdbui-commands");
+    if (!source) return;
+    GtkWidget *existing = g_object_get_data(G_OBJECT(button), "sdbui-command-popover");
+    if (existing) { gtk_popover_popdown(GTK_POPOVER(existing)); return; }
+    GMenu *menu = g_menu_new();
+    GSimpleActionGroup *group = g_simple_action_group_new();
+    GtkWidget *popover = gtk_popover_menu_new_from_model(NULL);
+    for (guint i = 0; i < source->count; i++) {
+        char *name = g_strdup_printf("item%u", i);
+        char *detailed = g_strdup_printf("commands.%s", name);
+        GSimpleAction *simple = g_simple_action_new(name, NULL);
+        CommandMenuAction *action = g_new0(CommandMenuAction, 1);
+        action->source = source; source->refs++; action->popover = popover; action->index = i;
+        g_signal_connect(simple, "activate", G_CALLBACK(command_activated), action);
+        g_object_set_data_full(G_OBJECT(simple), "sdbui-command", action, command_action_free);
+        g_simple_action_set_enabled(simple, source->enabled[i]);
+        g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(simple));
+        g_menu_append(menu, source->labels[i], detailed);
+        g_object_unref(simple); g_free(name); g_free(detailed);
+    }
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), G_MENU_MODEL(menu));
+    gtk_widget_insert_action_group(popover, "commands", G_ACTION_GROUP(group));
+    g_object_unref(menu); g_object_unref(group);
+    gtk_widget_set_parent(popover, GTK_WIDGET(button));
+    g_object_set_data(G_OBJECT(button), "sdbui-command-popover", popover);
+    gtk_popover_set_position(GTK_POPOVER(popover), GTK_POS_BOTTOM);
+    g_signal_connect(popover, "closed", G_CALLBACK(command_closed), NULL);
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+static GtkWidget *command_find_button(GtkWidget *root) {
+    if (GTK_IS_BUTTON(root)) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *button = command_find_button(child);
+        if (button) return button;
+    }
+    return NULL;
+}
+void sdbui_command_menu(void *root, const char *const *labels, const int32_t *enabled, uint32_t count,
+                        void *context, SDBUIFilterApply apply, SDBUIValueDestroy destroy) {
+    GtkWidget *button = command_find_button(GTK_WIDGET(root));
+    if (!button) { if (destroy) destroy(context); return; }
+    if (!g_object_get_data(G_OBJECT(button), "sdbui-commands"))
+        g_signal_connect(button, "clicked", G_CALLBACK(command_menu_clicked), NULL);
+    CommandMenuSource *source = g_new0(CommandMenuSource, 1);
+    source->refs = 1; source->count = count; source->context = context; source->apply = apply; source->destroy = destroy;
+    source->labels = g_new0(char *, count + 1); source->enabled = g_new(int, count);
+    for (guint i = 0; i < count; i++) { source->labels[i] = g_strdup(labels[i]); source->enabled[i] = enabled[i]; }
+    g_object_set_data_full(G_OBJECT(button), "sdbui-commands", source, command_source_unref);
+}

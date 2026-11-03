@@ -40,8 +40,12 @@ def find(name, role=None):
 def wait(predicate, seconds=20):
     deadline=time.monotonic()+seconds
     while time.monotonic()<deadline:
-        value=predicate()
-        if value:return value
+        try:
+            value=predicate()
+            if value:return value
+        except gi.repository.GLib.Error:
+            # GTK replaces accessible nodes during redraw; retry their new instances.
+            pass
         time.sleep(.1)
     raise RuntimeError('Timed out waiting for UI condition')
 
@@ -125,29 +129,38 @@ with tempfile.TemporaryDirectory(prefix='sdbui-quality-ui-') as directory:
     with log_path.open('w') as log:
         process=subprocess.Popen([str(repo/'.build/debug/sdbui')],cwd=root,env=env,stdout=log,stderr=log,start_new_session=True)
         try:
-            wait(lambda:find('Run All','push button'))
-            focus_window();shortcut('l');key('Control_L');press('Return');key('Control_L',False)
+            wait(lambda:find('Run','push button'))
+            focus_window()
+            click('Actions');time.sleep(.3)
+            press('Home');time.sleep(.2);press('Return')
             wait(lambda:has_label('100 rows'))
+            wait(lambda:not find('Cancel','push button'))
+            wait(lambda:has_label('long value 雪 1'))
             image=screenshot(artifacts/(args.appearance.lower()+'.png'))
             brightness=sum(ImageStat.Stat(image.crop((320,220,1180,600))).mean)/3
             assert brightness < 110 if args.appearance=='Dark' else brightness > 170,(args.appearance,brightness)
-            shortcut('comma');wait(lambda:find('Apply preferences','push button'))
+            focus_window();shortcut('comma');wait(lambda:find('Apply preferences','push button'))
             click('Reset defaults');click('Apply preferences')
             wait(lambda:json.loads(preferences.read_text())['fontSize']==13)
             saved=json.loads(preferences.read_text())
             assert saved==dict(pageSize=1000,fontSize=13,rowLimit=10000,appearance='System'),saved
-            shortcut('l');key('Control_L');press('Return');key('Control_L',False)
+            focus_window();shortcut('l');key('Control_L');press('Return');key('Control_L',False)
             wait(lambda:has_label('300 rows'))
             click('Show rows')
             wait(lambda:has_label('1–300'))
+            click('Table');time.sleep(.3)
+            press('Home');time.sleep(.2);press('Return')
+            wait(lambda:has_label('Browsing SQL'))
+            click('Close SQL')
             restored=screenshot(artifacts/(args.appearance.lower()+'-system.png'))
             brightness=sum(ImageStat.Stat(restored.crop((320,220,1180,600))).mean)/3
             assert brightness>170,('System theme did not return to light',brightness)
-            shortcut('comma');wait(lambda:find('Cancel preferences','push button'));press('Escape')
+            focus_window();shortcut('comma');wait(lambda:find('Cancel preferences','push button'));press('Escape')
             wait(lambda:not find('Apply preferences','push button'))
             assert process.poll() is None,log_path.read_text()
             print(args.appearance+': real SQLite query, preferences persistence, Ctrl+Enter, table paging, shortcuts and rendered theme passed')
         except Exception:
+            print("Application exit status:",process.poll())
             screenshot(artifacts/(args.appearance.lower()+'-failure.png'))
             print([(node.get_role_name(),node.get_name()) for node in nodes()][-100:])
             print(log_path.read_text())

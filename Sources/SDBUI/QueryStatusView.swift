@@ -9,30 +9,6 @@ import GtkBackend
 import AppKit
 #endif
 
-struct QueryStatusLine: View {
-    var model: BrowserModel
-    @State private var revision = 0
-
-    var body: some View {
-        let _ = revision
-        let _ = model.watch("query-status", of: { model.queryStatus }) { revision &+= 1 }
-        if let status = model.queryStatus {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(status.text)
-                        .font(.caption)
-                        .foregroundColor(status.truncated ? .orange : .gray)
-                    Spacer()
-                    if let error = status.error { CopyErrorButton(error: error) }
-                }
-                if let error = status.error {
-                    Text(error).foregroundColor(.red).textSelectionEnabled().lineLimit(5)
-                }
-            }
-        }
-    }
-}
-
 struct CopyErrorButton: View {
     let error: String
     @State private var copied = false

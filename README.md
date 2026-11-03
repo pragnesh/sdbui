@@ -63,7 +63,7 @@ host. CI includes macOS grid tests and packaged application launch checks.
 
 ## Import and export
 
-Select a table, open the **Query** pane, then choose **Import / export**.
+Select a table, open the **Query** pane, then choose **Actions → Import / export…**.
 **Export table…** streams the entire table to CSV, JSON, SQL `INSERT`, Arrow
 IPC (`.arrow`) or Parquet. Enable **Apply current filters** to export the
 current browsing filter; browsing sort is preserved. Paging and **Max rows**
@@ -163,12 +163,14 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
   `CREATE TABLE` statement (MySQL)
 - **Query:** SQL editor with results below. Clicking a table only selects
   it; **Show rows** runs ``SELECT * FROM `db`.`table` LIMIT 1000`` and shows
-  that SQL above the rows, never in the editor, with a column / operator /
-  value filters from column headers and Previous/Next paging; filtering, paging and header
-  sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`, `ORDER BY`).
-  Ctrl+Enter runs the selection or the statement at the cursor,
-  Run All runs every statement; Cancel (`AdbcConnectionCancel`), row limit,
-  CSV export. The editor's text is saved as a draft per connection (by
+  a compact table/filter summary. **Table → View SQL** reveals the generated
+  SQL without replacing the editor. Column-header filtering, Previous/Next
+  paging and header sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`, `ORDER BY`).
+  **Run** and Ctrl+Enter execute the selection or the statement at the cursor.
+  **Actions → Run All** executes every statement; Cancel appears while running.
+  The Actions menu also contains Explain and import/export; the toolbar keeps
+  History, Snippets and the row limit. Cancel uses `AdbcConnectionCancel`.
+  The editor's text is saved as a draft per connection (by
   favorite name) as you type and restored the next time you connect to it
 
 The app restores open connection tabs, the selected tab, each editor's SQL and font size, database/table selection, active pane, window size, and each sidebar width on launch. Saved favorites reconnect using their current saved settings. Restoring never executes editor SQL or restores query results, transactions, or SSH processes; connections start fresh. Missing favorites or failed connections leave the restored SQL available for reconnecting. Unsaved/modified connection settings reopen as disconnected tabs, since session state does not store connection credentials. `SDBUI_PROFILE` or `SDBUI_SQL` launch overrides take precedence over tab restoration.
@@ -194,9 +196,10 @@ Keyboard shortcuts on Linux/GTK:
 
 Shortcuts target the active connection. Existing editor and grid shortcuts such as Ctrl+Enter, Ctrl+C, and Ctrl+Z continue to work. F5 leaves manual query SQL and results intact; it does not rerun editor SQL. Font sizes are retained per tab and restored on launch.
 
-The query status line keeps the last manual run's row count, duration and
-Max rows truncation warning, independently of table loading and exports.
-Failures include **Copy error** for the complete message. When the driver
+One bottom status line shows query progress, row counts, duration and Max rows
+truncation warnings, or current browsing/connection activity. Each query tab
+retains its execution status. Failures include **Error details** and **Copy error**
+for the complete message. When the driver
 provides a statement position (supported by the PostgreSQL driver), the editor
 moves to that position, including within selections and multi-statement scripts.
 It leaves the cursor alone if you changed the SQL while the query was running.
@@ -250,7 +253,7 @@ invalidated by filter changes, refresh and committed row changes. Large counts
 can be cancelled with **Cancel** or **Esc**. Estimates remain available for
 unfiltered tables without requiring a full count.
 
-For PostgreSQL and transactional MySQL base tables, **Insert row** opens a value
+For PostgreSQL and transactional MySQL base tables, **Table → Insert row** opens a value
 form. Right-click a browsed cell for **Edit row…** or **Delete row…**; these actions
 require a primary key, including composite keys. Value, NULL and DEFAULT are
 separate choices. Generated, binary and NUL-containing fields remain read-only. Arbitrary query

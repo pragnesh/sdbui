@@ -614,7 +614,12 @@ final class BrowserModel {
     var maxRows: Int? = 10_000
     let maxRowsOptions = AppPreferences.rowLimits
 
-    @ObservationIgnored private(set) var queryStatus: QueryStatus? { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var queryStatus: QueryStatus? {
+        didSet {
+            if let queryStatus { statusMessage = queryStatus.text }
+            stateChanged()
+        }
+    }
     @ObservationIgnored private(set) var queryErrorLocation: QueryErrorLocation? { didSet { stateChanged() } }
 
     // MARK: Status
@@ -625,6 +630,21 @@ final class BrowserModel {
     @ObservationIgnored private(set) var errorMessage: String? { didSet { stateChanged() } }
     /// Number of catalog/content loads in flight.
     @ObservationIgnored private(set) var loadsInFlight = 0 { didSet { stateChanged() } }
+
+    /// The bottom status area is shared by manual queries and browsing/connection work.
+    var statusLine: QueryStatus {
+        let matchingQuery = selectedTab == .query && !isBrowsing && queryStatus?.text == statusMessage ? queryStatus : nil
+        let text = loadsInFlight > 0 && !isConnectionLost ? "Loading…  " + statusMessage : statusMessage
+        return QueryStatus(text: text, error: errorMessage ?? matchingQuery?.error,
+                           truncated: matchingQuery?.truncated ?? false)
+    }
+
+    var browseFilterSummary: String? {
+        guard isBrowsing, let filter = contentFilter else { return nil }
+        let value = filter.value.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+        let preview = String(value.prefix(60)) + (value.count > 60 ? "…" : "")
+        return filter.column + " " + filter.op.rawValue + (filter.op.needsValue ? " \"" + preview + "\"" : "")
+    }
 
     static let systemSchemas: Set<String> = [
         "information_schema", "pg_catalog", "pg_toast", "mysql", "performance_schema", "sys",

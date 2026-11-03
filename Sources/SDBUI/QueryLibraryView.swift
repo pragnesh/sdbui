@@ -6,32 +6,6 @@ import Gtk
 import CGtk
 #endif
 
-struct QueryLibraryBar: View {
-    var model: BrowserModel
-    @State private var revision = 0
-
-    var body: some View {
-        let _ = revision
-        let _ = model.watch("query-library-bar", of: {
-            [model.librarySection?.rawValue ?? "", model.libraryFeedback]
-        }) { revision &+= 1 }
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                ForEach(QueryLibrarySection.allCases, id: \.rawValue) { section in
-                    Button(section.rawValue) { model.toggleLibrary(section) }
-                        .buttonStyle(model.librarySection == section ? .bordered : .borderless)
-                }
-                Spacer()
-                Text("Ctrl+Enter runs the current statement or selection")
-                    .font(.caption).foregroundColor(.gray)
-            }
-            if !model.libraryFeedback.isEmpty {
-                Text(model.libraryFeedback).font(.caption)
-            }
-        }
-    }
-}
-
 struct QueryLibraryPanel: View {
     var model: BrowserModel
     var section: QueryLibrarySection

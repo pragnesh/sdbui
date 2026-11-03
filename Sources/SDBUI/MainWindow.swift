@@ -251,35 +251,31 @@ struct TabContent: View {
 struct StatusBar: View {
     var model: BrowserModel
     @State private var revision = 0
+    @State private var detailsVisible = false
 
     var body: some View {
         let _ = revision
-        let _ = model.watch(
-            "status",
-            of: { [AnyHashable(model.statusMessage), model.errorMessage, model.loadsInFlight, model.selectedTab, model.queryStatus] }
-        ) {
-            revision &+= 1
-        }
+        let _ = model.watch("status", of: { model.statusLine }) { revision &+= 1 }
+        let status = model.statusLine
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(model.loadsInFlight > 0 && !model.isConnectionLost ? "Loading…  \(model.statusMessage)" : model.statusMessage)
-                    .font(.caption)
+            HStack(spacing: 8) {
+                Text(status.error.map { status.text + " · " + $0.replacingOccurrences(of: "\n", with: " ") } ?? status.text).font(.caption)
+                    .foregroundColor(status.error != nil ? .red : status.truncated ? .orange : .gray)
+                    .lineLimit(1)
                 Spacer()
-            }
-            if let error = model.errorMessage,
-               model.selectedTab != .query || model.queryStatus?.error != error {
-                HStack(spacing: 8) {
-                    Text(error).foregroundColor(.red).textSelectionEnabled()
-                    Spacer()
+                if let error = status.error {
+                    Button(detailsVisible ? "Hide error" : "Error details") { detailsVisible.toggle() }.fixedSize()
                     CopyErrorButton(error: error)
                 }
             }
+            if detailsVisible, let error = status.error {
+                ScrollView { Text(error).foregroundColor(.red).textSelectionEnabled() }.frame(height: 80)
+            }
         }
+        .onChange(of: status.error) { detailsVisible = false }
     }
 }
 
-/// A result pane's grid, redrawn only when the pane changes. The grid is
-/// virtualized: only displayed cells are formatted and drawn.
 struct PaneGrid: View {
     var model: BrowserModel
     var pane: ResultPane
@@ -368,28 +364,45 @@ struct PaneGrid: View {
 struct BrowseBar: View {
     var model: BrowserModel
     @State private var revision = 0
+    @State private var showingSQL = false
 
     var body: some View {
         let _ = revision
-        let _ = model.watch(
-            "browse-bar",
-            of: { [AnyHashable(model.isBrowsing), model.selectedTableID, model.browseSQL, model.canRun] }
-        ) {
-            revision &+= 1
-        }
+        let _ = model.watch("browse-bar", of: {
+            [AnyHashable(model.isBrowsing), model.selectedTableID, model.browseSQL, model.canRun, model.browseFilterSummary, model.canInsertRows, model.rowEditDraft != nil]
+        }) { revision &+= 1 }
         if let table = model.selectedTable {
-            HStack(spacing: 8) {
-                if !model.isBrowsing {
-                    Button("Show rows") { model.browseSelectedTable() }
-                        .disabled(!model.canRun)
-                        .fixedSize()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    if !model.isBrowsing {
+                        Button("Show rows") { model.browseSelectedTable() }.disabled(!model.canRun).fixedSize()
+                    }
+                    Text(table.name).lineLimit(1)
+                    if let filter = model.browseFilterSummary {
+                        Text("Filtered: " + filter).font(.caption).foregroundColor(.gray).lineLimit(1)
+                    }
+                    Spacer()
+                    if model.isBrowsing {
+                        CommandMenu(title: "Table", commands: [
+                            MenuCommand(title: "View SQL") { showingSQL = true },
+                            MenuCommand(title: "Insert row", enabled: model.canInsertRows && model.rowEditDraft == nil) { model.beginRowEdit(kind: .insert) },
+                            MenuCommand(title: "Clear filter", enabled: model.canRun && model.contentFilter != nil) { model.clearContentFilter() },
+                        ]).fixedSize()
+                    }
                 }
-                Text(model.isBrowsing ? model.browseSQL : "Rows of \(table.name)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.gray)
-                    .lineLimit(1)
-                Spacer()
+                if model.isBrowsing && showingSQL {
+                    HStack {
+                        Text("Browsing SQL").font(.caption)
+                        Spacer()
+                        Button("Close SQL") { showingSQL = false }.fixedSize()
+                    }
+                    ScrollView([.horizontal, .vertical]) {
+                        Text(model.browseSQL).font(.system(size: 12, design: .monospaced)).textSelectionEnabled()
+                    }.frame(height: 90)
+                }
             }
+            .onChange(of: model.selectedTableID) { showingSQL = false }
+            .onChange(of: model.isBrowsing) { showingSQL = false }
         }
     }
 }

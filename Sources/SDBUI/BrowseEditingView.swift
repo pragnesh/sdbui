@@ -8,16 +8,16 @@ struct RowEditingBar: View {
     var body: some View {
         let _ = revision
         let _ = model.watch("row-editing-bar", of: { [AnyHashable(model.isBrowsing), model.isRunning, model.editMetadataRevision, model.selectedTableID, model.editFeedback, model.rowEditDraft != nil] }) { revision &+= 1 }
-        if model.isBrowsing {
+        if model.isBrowsing && (!model.canEditRows || !model.editFeedback.isEmpty) {
             HStack {
-                Button("Insert row") { model.beginRowEdit(kind: .insert) }.disabled(!model.canInsertRows || model.rowEditDraft != nil)
-                if model.isRunning { Text("Working…").font(.caption) }
-                else if !model.canUseConnection { Text("Connection unavailable").font(.caption) }
-                else if model.connectionSafety.readOnly { Text("Read-only connection").font(.caption) }
-                else if model.canEditRows { Text("Right-click a cell to edit or delete its row.").font(.caption) }
-                else if let id = model.selectedTableID, let metadata = model.editMetadata[id] {
-                    Text(metadata.transactional ? "Updates/deletes require a supported primary key." : "This is not a transactional base table.").font(.caption)
-                } else { Text(!model.dialect.supportsTableWrites ? "Row editing supports PostgreSQL and MySQL tables." : (model.editMetadataError.isEmpty ? "Loading row metadata…" : model.editMetadataError)).font(.caption) }
+                if !model.canEditRows {
+                    if model.isRunning { Text("Working…").font(.caption) }
+                    else if !model.canUseConnection { Text("Connection unavailable").font(.caption) }
+                    else if model.connectionSafety.readOnly { Text("Read-only connection").font(.caption) }
+                    else if let id = model.selectedTableID, let metadata = model.editMetadata[id] {
+                        Text(metadata.transactional ? "Updates/deletes require a supported primary key." : "This is not a transactional base table.").font(.caption)
+                    } else { Text(!model.dialect.supportsTableWrites ? "Row editing supports PostgreSQL and MySQL tables." : (model.editMetadataError.isEmpty ? "Loading row metadata…" : model.editMetadataError)).font(.caption) }
+                }
                 if !model.editFeedback.isEmpty { Text(model.editFeedback).font(.caption) }
                 Spacer()
             }

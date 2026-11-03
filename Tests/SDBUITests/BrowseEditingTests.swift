@@ -93,6 +93,7 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         XCTAssertFalse(model.filterEditorVisible)
         try await waitUntil { !model.isRunning }
         XCTAssertEqual(model.queryPane.result?.rowCount, 2)
+        XCTAssertEqual(model.browseFilterSummary, "name = \"alpha\"")
         model.countContentRows()
         try await waitUntil { !model.isRunning }
         XCTAssertEqual(model.contentTotal, 2)
@@ -112,6 +113,7 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         model.clearContentFilter()
         try await waitUntil { !model.isRunning }
         XCTAssertNil(model.contentFilter)
+        XCTAssertNil(model.browseFilterSummary)
         XCTAssertNil(model.contentTotal)
         XCTAssertEqual(model.queryPane.result?.rowCount, 4)
     }

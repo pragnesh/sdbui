@@ -14,7 +14,6 @@ struct QueryTab: View {
         VStack(alignment: .leading, spacing: 8) {
             QueryDocumentBar(model: model)
             QueryToolbar(model: model)
-            QueryLibraryBar(model: model)
             HStack(alignment: .top, spacing: 12) {
                 SQLEditor(model: model, height: model.librarySection == nil ? 180 : 360)
                     .frame(maxWidth: .infinity)
@@ -24,7 +23,6 @@ struct QueryTab: View {
                 }
             }
             QuerySafetyConfirmation(model: model)
-            QueryStatusLine(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)
             RowEditingBar(model: model)
@@ -55,34 +53,35 @@ struct QueryToolbar: View {
         let _ = revision
         let _ = model.watch(
             "query-toolbar",
-            of: { [AnyHashable(model.isRunning), model.canRun, model.queryPane.hasColumns] }
+            of: { [AnyHashable(model.isRunning), model.canRun, model.queryPane.hasColumns, model.librarySection?.rawValue ?? "", model.libraryFeedback, AnyHashable(model.maxRows)] }
         ) {
             revision &+= 1
         }
-        // Controls keep their natural size: squeezed below it in a narrow
-        // window, GTK's ellipsizing button labels report inconsistent sizes
-        // ("natural size must be >= min size" warnings).
-        HStack {
-            // A constant label: a size change here would re-lay-out the pane
-            // twice per query (the status bar already says "Running…").
-            Button("Run All") { model.runQuery() }
-                .disabled(!model.canRun)
-                .fixedSize()
-            Button("Explain") { model.explainQuery() }
-                .disabled(!model.canRun)
-                .fixedSize()
-            Button("Cancel") { model.cancelQuery() }
-                .disabled(!model.isRunning)
-                .fixedSize()
-            Button("Export loaded CSV") { export() }
-                .disabled(!model.queryPane.hasColumns)
-                .fixedSize()
-            Button("Import / export") { model.toggleTransfers() }.disabled(!model.canRun).fixedSize()
+        HStack(spacing: 8) {
+            Button("Run") {
+                model.runCurrentStatement(TextEditorSubmission(text: model.sql, selection: model.editorSelection, cursor: model.editorCursor))
+            }
+            .disabled(!model.canRun).fixedSize()
+            if model.isRunning {
+                Button("Cancel") { model.cancelQuery() }.fixedSize()
+            }
+            CommandMenu(title: "Actions", commands: [
+                MenuCommand(title: "Run All", enabled: model.canRun) { model.runQuery() },
+                MenuCommand(title: "Explain", enabled: model.canRun) { model.explainQuery() },
+                MenuCommand(title: "Export loaded CSV…", enabled: model.queryPane.hasColumns) { export() },
+                MenuCommand(title: "Import / export…", enabled: model.canRun) { model.toggleTransfers() },
+            ]).fixedSize()
+            ForEach(QueryLibrarySection.allCases, id: \.rawValue) { section in
+                Button(section.rawValue) { model.toggleLibrary(section) }
+                    .buttonStyle(model.librarySection == section ? .bordered : .borderless)
+                    .fixedSize()
+            }
             Spacer()
-            Text("Max rows")
-                .fixedSize()
-            Picker(of: model.maxRowsOptions, selection: model.binding(\.maxRows))
-                .fixedSize()
+            if !model.libraryFeedback.isEmpty {
+                Text(model.libraryFeedback).font(.caption).lineLimit(1)
+            }
+            Text("Max rows").fixedSize()
+            Picker(of: model.maxRowsOptions, selection: model.binding(\.maxRows)).fixedSize()
         }
     }
 
