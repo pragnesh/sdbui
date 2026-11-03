@@ -111,15 +111,15 @@ public final class ADBCConnection: @unchecked Sendable {
     // MARK: Queries
 
     /// Run `sql`, keeping at most `maxRows` rows.
-    public func execute(_ sql: String, maxRows: Int) throws -> QueryResult {
+    public func execute(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {
         lock.lock()
         defer { lock.unlock() }
-        return try executeLocked(sql, maxRows: maxRows)
+        return try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
     }
 
     /// Executes one approved read query in a database-enforced read-only transaction.
     /// The lock covers BEGIN, the query and ROLLBACK so other loads cannot interleave.
-    public func executeReadOnly(_ sql: String, maxRows: Int) throws -> QueryResult {
+    public func executeReadOnly(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {
         lock.lock()
         defer { lock.unlock() }
         let dialect = SQLDialect(vendorName: vendorName)
@@ -129,7 +129,7 @@ public final class ADBCConnection: @unchecked Sendable {
         }
         _ = try executeLocked(dialect == .postgres ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY", maxRows: 0)
         do {
-            let result = try executeLocked(sql, maxRows: maxRows)
+            let result = try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
             _ = try executeLocked("ROLLBACK", maxRows: 0)
             return result
         } catch {
@@ -152,7 +152,7 @@ public final class ADBCConnection: @unchecked Sendable {
         return (error as? ADBCError)?.isConnectionLoss ?? false
     }
 
-    private func executeLocked(_ sql: String, maxRows: Int) throws -> QueryResult {
+    private func executeLocked(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {
         try tunnel?.check()
         let clock = ContinuousClock()
         let start = clock.now
@@ -160,7 +160,7 @@ public final class ADBCConnection: @unchecked Sendable {
         var rowsAffected: Int64 = -1
         var error: UnsafeMutablePointer<CChar>?
         var errorPosition: Int64 = 0
-        guard cadbc_execute(session, sql, &stream, &rowsAffected, &errorPosition, &error) == ADBC_STATUS_OK else {
+        guard cadbc_execute_options(session, sql, usePostgresCopy ? 0 : 1, &stream, &rowsAffected, &errorPosition, &error) == ADBC_STATUS_OK else {
             var failure = takeError(error, fallback: "Query failed")
             failure.statementPosition = errorPosition > 0 ? Int(exactly: errorPosition) : nil
             throw failure

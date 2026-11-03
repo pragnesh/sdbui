@@ -288,7 +288,7 @@ struct PaneGrid: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
+        let _ = model.watch(key, of: { [AnyHashable(pane.revision), AnyHashable(ObjectIdentifier(pane)), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
         if pane.hasColumns {
             VStack(alignment: .leading, spacing: 4) {
                 if !pane.hiddenColumns.isEmpty || pane.frozenCount > 0 {

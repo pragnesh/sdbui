@@ -108,6 +108,32 @@ cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
 For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current single-column filter, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
 
+The SQL editor highlights keywords, strings, quoted identifiers, numbers and
+comments in light and dark themes. Highlighting preserves the SQL text,
+selection and undo history; no additional editor package is required on Linux.
+
+Use **Ctrl+Space** for table, column and keyword suggestions. Suggestions also
+appear after typing a name prefix or a dot. Choose with **↑/↓**, accept with
+**Tab** or **Enter**, and dismiss with **Esc**. Table and column identifiers are
+quoted for the current database. Column suggestions recognize ordinary
+`FROM`/`JOIN` aliases, including aliases written after the cursor, and fetch
+metadata for referenced tables in the background. Completion is a lightweight
+SQL aid; it does not infer columns of CTEs or derived subqueries.
+
+**+ Query** opens another SQL draft inside the current connection. Each query tab
+keeps its own editor text, cursor, results, filters, status and statement log.
+An asterisk marks unsaved SQL, and closing an edited query requires confirmation.
+All query drafts and the selected query tab are restored on launch; results are
+kept only in memory and restored SQL is never automatically executed. Query tabs
+share one connection, so switching or closing them is disabled during execution.
+Use another connection tab for concurrent work.
+
+**Explain** requests the execution plan for the statement at the cursor or a
+single selected read-only statement, without replacing editor SQL. It supports
+PostgreSQL and MySQL and never adds `ANALYZE`; explaining SQL does not mark the
+draft as successfully executed. PostgreSQL plan queries use the driver's
+non-COPY result path. Manually running an `EXPLAIN` statement also uses that path.
+
 Right-click a **column header** to sort ascending or descending, copy its name
 or all loaded values, hide it, or auto-fit its width from a sample of loaded
 rows. **Freeze through this column** keeps the leading visible columns in a

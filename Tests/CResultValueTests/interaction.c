@@ -395,8 +395,89 @@ static void test_virtual_table_list(void) {
     g_assert_cmpuint(test.destroyed, ==, 1);
 }
 
+static int completion_calls, editor_positions, editor_destroyed;
+static char *editor_complete(void *context, const char *text, int cursor, int *start) {
+    (void)context;
+    g_assert_cmpstr(text, ==, "SE"); g_assert_cmpint(cursor, ==, 2);
+    *start = 0; completion_calls++;
+    return strdup("SELECT\nSET");
+}
+static void editor_position(void *context, int cursor, int start, int end) {
+    (void)context; (void)cursor; (void)start; (void)end;
+    editor_positions++;
+}
+static void editor_destroy(void *context) { (void)context; editor_destroyed++; }
+static void wait_editor(void) {
+    gint64 deadline = g_get_monotonic_time() + 250000;
+    while (g_get_monotonic_time() < deadline) { while (g_main_context_iteration(NULL, FALSE)) {} g_usleep(1000); }
+}
+static gboolean editor_key(GtkWidget *view, guint key, GdkModifierType modifiers) {
+    gboolean handled = FALSE;
+    GListModel *controllers = gtk_widget_observe_controllers(view);
+    for (guint i = 0; i < g_list_model_get_n_items(controllers); i++) {
+        GObject *controller = g_list_model_get_item(controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_KEY(controller)) g_signal_emit_by_name(controller, "key-pressed", key, 0, modifiers, &handled);
+        g_object_unref(controller);
+        if (handled) break;
+    }
+    g_object_unref(controllers);
+    return handled;
+}
+static void assert_tag(GtkTextBuffer *buffer, int offset, const char *name) {
+    GtkTextIter iter; gtk_text_buffer_get_iter_at_offset(buffer, &iter, offset);
+    GtkTextTag *tag = gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(buffer), name);
+    g_assert_nonnull(tag); g_assert_true(gtk_text_iter_has_tag(&iter, tag));
+}
+static void test_sql_editor(void) {
+    GtkWidget *view = gtk_text_view_new(), *window = gtk_window_new();
+    gtk_window_set_default_size(GTK_WINDOW(window), 500, 240);
+    gtk_window_set_child(GTK_WINDOW(window), view); gtk_window_present(GTK_WINDOW(window));
+    gtk_widget_grab_focus(view);
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+    const char *sql = "SELECT '🙂' AS \"name\", 42 -- comment\n/* nested /* x */ y */ SELECT $$body$$";
+    gtk_text_buffer_set_text(buffer, sql, -1);
+    sdbui_sql_editor_install(view, NULL, NULL, editor_position, editor_destroy, 2);
+    gtk_text_buffer_set_modified(buffer, FALSE);
+    wait_editor();
+    assert_tag(buffer, 0, "sdbui-keyword");
+    assert_tag(buffer, 8, "sdbui-string");
+    assert_tag(buffer, 27, "sdbui-comment");
+    assert_tag(buffer, 22, "sdbui-number");
+    assert_tag(buffer, 15, "sdbui-identifier");
+    GtkTextIter a, b; gtk_text_buffer_get_bounds(buffer, &a, &b);
+    char *unchanged = gtk_text_buffer_get_text(buffer, &a, &b, FALSE);
+    g_assert_cmpstr(unchanged, ==, sql); g_free(unchanged);
+    g_assert_false(gtk_text_buffer_get_modified(buffer));
+    gtk_text_buffer_set_text(buffer, "SE", -1);
+    sdbui_sql_editor_install(view, NULL, editor_complete, editor_position, editor_destroy, 2);
+    sdbui_sql_editor_select(view, 2, -1, -1, 1);
+    gtk_widget_grab_focus(view);
+    g_assert_true(editor_key(view, GDK_KEY_space, GDK_CONTROL_MASK));
+    g_assert_cmpint(completion_calls, ==, 1);
+    wait_editor();
+    GtkWidget *suggestions = find(view, GTK_TYPE_POPOVER);
+    g_assert_nonnull(suggestions);
+    GdkSurface *suggestion_surface = gtk_native_get_surface(GTK_NATIVE(suggestions));
+    g_assert_nonnull(suggestion_surface);
+    g_assert_cmpint(gdk_surface_get_width(suggestion_surface), >=, 220);
+    g_assert_true(editor_key(view, GDK_KEY_Tab, 0));
+    gtk_text_buffer_get_bounds(buffer, &a, &b);
+    char *completed = gtk_text_buffer_get_text(buffer, &a, &b, FALSE);
+    g_assert_cmpstr(completed, ==, "SELECT"); g_free(completed);
+    g_assert_true(gtk_text_buffer_get_can_undo(buffer));
+    gtk_text_buffer_undo(buffer);
+    gtk_text_buffer_get_bounds(buffer, &a, &b);
+    char *undone = gtk_text_buffer_get_text(buffer, &a, &b, FALSE);
+    g_assert_cmpstr(undone, ==, "SE"); g_free(undone);
+    g_assert_cmpint(editor_positions, >, 0);
+    gtk_window_destroy(GTK_WINDOW(window));
+    wait_editor();
+    g_assert_cmpint(editor_destroyed, ==, 2);
+}
+
 int main(void) {
     gtk_init();
+    test_sql_editor();
     test_shortcuts();
     test_frozen_grids();
     test_session_layout();
@@ -446,6 +527,6 @@ int main(void) {
     g_main_loop_unref(loop);
     settle_layout();
     g_assert_cmpuint(filter_destroyed, ==, 1);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection, cell filter submenu, header context menu, frozen grid scrolling and selection\n");
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection, cell filter submenu, header context menu, frozen grid scrolling and selection, SQL highlighting, completion and undo\n");
     return 0;
 }

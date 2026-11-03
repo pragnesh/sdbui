@@ -11,7 +11,7 @@ static struct AdbcErrorDetail detail_get(const struct AdbcError* error, int inde
   (void)error; assert(index == 0); return position_detail;
 }
 
-static int alive, stream_releases, statement_releases, fail_stage, read_error;
+static int alive, stream_releases, statement_releases, fail_stage, read_error, option_calls;
 static int schema(struct ArrowArrayStream* stream, struct ArrowSchema* out) {
   assert(alive && stream->private_data == &alive);
   memset(out, 0, sizeof(*out));
@@ -49,6 +49,14 @@ static AdbcStatusCode set_sql(struct AdbcStatement* statement, const char* sql,
   }
   return fail_stage == 2 ? ADBC_STATUS_INVALID_ARGUMENT : ADBC_STATUS_OK;
 }
+static AdbcStatusCode set_option(struct AdbcStatement* statement, const char* key,
+                                 const char* value, struct AdbcError* error) {
+  (void)statement; (void)error;
+  assert(strcmp(key, "adbc.postgresql.use_copy") == 0);
+  assert(strcmp(value, ADBC_OPTION_VALUE_DISABLED) == 0);
+  option_calls++;
+  return fail_stage == 4 ? ADBC_STATUS_NOT_IMPLEMENTED : ADBC_STATUS_OK;
+}
 static AdbcStatusCode execute(struct AdbcStatement* statement,
                               struct ArrowArrayStream* out, int64_t* rows,
                               struct AdbcError* error) {
@@ -62,7 +70,7 @@ static AdbcStatusCode release_statement(struct AdbcStatement* statement,
                                         struct AdbcError* error) {
   (void)statement; (void)error;
   assert(alive);
-  if (fail_stage != 2) assert(stream_releases == 1);
+  if (fail_stage != 2 && fail_stage != 4) assert(stream_releases == 1);
   alive = 0;
   statement_releases++;
   return ADBC_STATUS_OK;
@@ -122,6 +130,24 @@ int main(void) {
     cadbc_stream_release(&stream);
     cadbc_stream_release(&stream); // Release helper must be idempotent.
     assert(!alive && statement_releases == 1 && stream_releases == 1);
+  }
+  for (int fail = 0; fail < 2; fail++) {
+    alive = stream_releases = statement_releases = option_calls = 0;
+    fail_stage = fail ? 4 : 0;
+    session.driver.StatementSetOption = set_option;
+    struct ArrowArrayStream stream = {0};
+    char *error = NULL;
+    AdbcStatusCode status = cadbc_execute_options(&session, "EXPLAIN SELECT 1", 1, &stream, NULL, NULL, &error);
+    assert(option_calls == 1);
+    if (fail) {
+      assert(status == ADBC_STATUS_NOT_IMPLEMENTED && error);
+      assert(!alive && statement_releases == 1 && stream_releases == 0);
+      free(error);
+    } else {
+      assert(status == ADBC_STATUS_OK && alive);
+      cadbc_stream_release(&stream);
+      assert(!alive && stream_releases == 1 && statement_releases == 1);
+    }
   }
   puts("Statement/stream lifetime regression tests passed");
 }

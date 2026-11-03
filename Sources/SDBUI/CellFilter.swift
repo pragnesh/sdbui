@@ -1,4 +1,5 @@
 import ADBCKit
+import Foundation
 
 /// A menu snapshot, tied to the connection, table and displayed result revision.
 struct CellFilterTarget: Sendable {
@@ -7,6 +8,7 @@ struct CellFilterTarget: Sendable {
     let tableID: String
     let sessionRevision: Int
     let paneRevision: Int
+    var queryID: UUID? = nil
 
     func filter(for command: Int32) -> SQLDialect.Filter? {
         let op: SQLDialect.Filter.Operator

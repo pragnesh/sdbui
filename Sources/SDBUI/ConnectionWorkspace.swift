@@ -205,7 +205,7 @@ struct ConnectionWorkspaceView: View {
                         Text("A query is running. Closing this tab requests cancellation; statements already completed are not rolled back.")
                     }
                     if tab.model.hasUnsavedSQL {
-                        Text("This editor has SQL changes that have not been successfully run or saved as a snippet.")
+                        Text("This connection has query tabs with SQL changes that have not been successfully run or saved as snippets.")
                     }
                     HStack {
                         Button("Keep tab open") { workspace.cancelClose() }

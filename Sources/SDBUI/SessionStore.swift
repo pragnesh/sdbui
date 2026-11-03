@@ -14,6 +14,8 @@ struct SessionTabState: Codable, Equatable {
     var pane = BrowserTab.query.rawValue
     var fontSize = 13.0
     var sidebarWidth = 290
+    var queries: [QueryDraftState]? = nil
+    var selectedQueryID: UUID? = nil
 }
 
 struct SessionTableState: Codable, Equatable {
@@ -46,7 +48,13 @@ final class SessionStore {
             guard state.version == 1, !state.tabs.isEmpty, state.tabs.count <= 1000,
                   state.tabs.indices.contains(state.selectedIndex),
                   (640...16384).contains(state.width), (400...16384).contains(state.height),
-                  state.tabs.allSatisfy({ (9...28).contains($0.fontSize) && (180...4000).contains($0.sidebarWidth) }) else {
+                  state.tabs.allSatisfy({ tab in
+                      (9...28).contains(tab.fontSize) && (180...4000).contains(tab.sidebarWidth)
+                      && (tab.queries.map { queries in
+                          !queries.isEmpty && queries.count <= 1000 && Set(queries.map(\.id)).count == queries.count
+                          && (tab.selectedQueryID == nil || queries.contains { $0.id == tab.selectedQueryID })
+                      } ?? (tab.selectedQueryID == nil))
+                  }) else {
                 throw NSError(domain: "SDBUI.Session", code: 1)
             }
             return state

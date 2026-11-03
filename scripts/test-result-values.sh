@@ -6,5 +6,5 @@ binary=$(mktemp /tmp/sdbui-values-test.XXXXXX)
 trap 'rm -f "$binary"' EXIT
 cc -Wall -Wextra -Werror -I Sources/CResultValue/include \
   $(pkg-config --cflags gtk4) Tests/CResultValueTests/interaction.c \
-  Sources/CResultValue/result_value.c $(pkg-config --libs gtk4) -o "$binary"
+  Sources/CResultValue/result_value.c Sources/CResultValue/sql_editor.c $(pkg-config --libs gtk4) -o "$binary"
 "$binary"

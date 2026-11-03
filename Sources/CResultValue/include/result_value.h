@@ -31,4 +31,9 @@ typedef void *(*SDBUIHeaderPrepare)(void *context, uint32_t column);
 typedef char *(*SDBUIHeaderApply)(void *snapshot, int32_t command);
 void sdbui_grid_headers(void *grid, SDBUIHeaderPrepare prepare, SDBUIHeaderApply apply, SDBUIValueDestroy destroy);
 void sdbui_grid_pair(void *root);
+/* Native SQL editor assistance; callbacks use Unicode scalar offsets. */
+typedef char *(*SDBUIEditorComplete)(void *context, const char *text, int cursor, int *start);
+typedef void (*SDBUIEditorPosition)(void *context, int cursor, int start, int end);
+void sdbui_sql_editor_install(void *editor, void *context, SDBUIEditorComplete complete, SDBUIEditorPosition position, SDBUIValueDestroy destroy, int dialect);
+void sdbui_sql_editor_select(void *editor, int cursor, int start, int end, int reset_undo);
 #endif

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftCrossUI
 #if canImport(GtkBackend)
 import CGtk
@@ -53,12 +54,14 @@ struct CopyErrorButton: View {
     }
 }
 
+@Observable
 @MainActor
 final class EditorErrorNavigation {
-    var appliedID: UUID?
+    @ObservationIgnored var appliedID: UUID?
+    @ObservationIgnored var appliedDocument: UUID?
 }
 
-extension TextEditor {
+extension View {
     @ViewBuilder
     func revealingQueryError(_ model: BrowserModel, navigation: EditorErrorNavigation) -> some View {
         #if canImport(GtkBackend)

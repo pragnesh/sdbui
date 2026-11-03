@@ -10,8 +10,9 @@ struct QueryTab: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch("query-library-layout", of: { model.librarySection?.rawValue }) { revision &+= 1 }
+        let _ = model.watch("query-library-layout", of: { [AnyHashable(model.librarySection?.rawValue), AnyHashable(model.queryDocumentsRevision)] }) { revision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
+            QueryDocumentBar(model: model)
             QueryToolbar(model: model)
             QueryLibraryBar(model: model)
             HStack(alignment: .top, spacing: 12) {
@@ -61,6 +62,9 @@ struct QueryToolbar: View {
             Button("Run All") { model.runQuery() }
                 .disabled(!model.canRun)
                 .fixedSize()
+            Button("Explain") { model.explainQuery() }
+                .disabled(!model.canRun)
+                .fixedSize()
             Button("Cancel") { model.cancelQuery() }
                 .disabled(!model.isRunning)
                 .fixedSize()
@@ -95,10 +99,11 @@ struct SQLEditor: View {
         // Re-render only when code replaces the text (which bumps
         // `sqlRevision`), not on every keystroke.
         let _ = revision
-        let _ = model.watch("editor", of: { [AnyHashable(model.sqlRevision), AnyHashable(model.queryErrorLocation?.id), AnyHashable(model.queryFontSize)] }) { revision &+= 1 }
+        let _ = model.watch("editor", of: { [AnyHashable(model.sqlRevision), AnyHashable(model.queryErrorLocation?.id), AnyHashable(model.queryFontSize), AnyHashable(model.completionRevision)] }) { revision &+= 1 }
         TextEditor(text: model.binding(\.sql)) { submission in
             model.runCurrentStatement(submission)
         }
+            .assistingSQL(model, navigation: navigation)
             .revealingQueryError(model, navigation: navigation)
             .shortcutFocusTarget("editor")
             .font(.system(size: model.queryFontSize, design: .monospaced))

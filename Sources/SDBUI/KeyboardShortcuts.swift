@@ -30,6 +30,8 @@ extension ConnectionWorkspace {
             model.selectTab(.query)
         case .cancel:
             if pendingCloseID != nil { cancelClose() }
+            else if model.pendingQueryCloseID != nil { model.cancelQueryDocumentClose() }
+            else if model.pendingDisconnect { model.cancelDisconnect() }
             else if model.pendingQuery != nil { model.cancelPendingQuery() }
             else if model.isRunning { model.cancelQuery() }
             else { return false }

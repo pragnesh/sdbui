@@ -45,6 +45,13 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
                              struct ArrowArrayStream* out, int64_t* rows_affected,
                              int64_t* error_position, char** error_out);
 
+/// PostgreSQL utility result sets such as EXPLAIN cannot use COPY (query).
+/// The flag applies only to this statement; other queries retain driver defaults.
+AdbcStatusCode cadbc_execute_options(CAdbcSession* session, const char* sql,
+                             int disable_postgres_copy,
+                             struct ArrowArrayStream* out, int64_t* rows_affected,
+                             int64_t* error_position, char** error_out);
+
 /// Cancel the query currently running on this session (ADBC 1.1 drivers only).
 /// Safe to call from another thread.
 AdbcStatusCode cadbc_cancel(CAdbcSession* session, char** error_out);

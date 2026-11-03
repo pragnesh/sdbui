@@ -98,7 +98,8 @@ final class BrowserModel {
     @ObservationIgnored private(set) var sidebarWidth = 290
     @ObservationIgnored private(set) var restorableProfileID: String?
     @ObservationIgnored private var pendingSessionRestore: SessionTabState?
-    var hasUnsavedSQL: Bool { editorBaselineSQL.map { $0 != sql } ?? true }
+    var activeSQLIsDirty: Bool { editorBaselineSQL.map { $0 != sql } ?? true }
+    var hasUnsavedSQL: Bool { activeSQLIsDirty || queryDocuments.enumerated().contains { $0.offset != selectedQueryIndex && $0.element.dirty } }
 
     func updateSidebarWidth(_ width: Int) {
         guard (180...4000).contains(width), width != sidebarWidth else { return }
@@ -110,14 +111,27 @@ final class BrowserModel {
         SessionTabState(favoriteID: restorableProfileID, sql: sql, dirty: hasUnsavedSQL,
             database: pendingSessionRestore?.database ?? selectedDatabase,
             table: pendingSessionRestore?.table ?? selectedTable.map { SessionTableState(catalog: $0.catalog, schema: $0.schema, name: $0.name) },
-            pane: pendingSessionRestore?.pane ?? selectedTab.rawValue, fontSize: queryFontSize, sidebarWidth: sidebarWidth)
+            pane: pendingSessionRestore?.pane ?? selectedTab.rawValue, fontSize: queryFontSize, sidebarWidth: sidebarWidth,
+            queries: queryDrafts, selectedQueryID: activeQueryDocument.id)
     }
 
     func restoreSession(_ state: SessionTabState) {
         pendingSessionRestore = state
         restorableProfileID = state.favoriteID
-        setSQL(state.sql)
-        editorBaselineSQL = state.dirty ? nil : state.sql
+        if let queries = state.queries, !queries.isEmpty {
+            queryDocuments = queries.map { draft in
+                let document = QueryDocument(id: draft.id, name: draft.name, pane: makePane())
+                document.sql = draft.sql
+                document.baseline = draft.dirty ? nil : draft.sql
+                return document
+            }
+            selectedQueryIndex = queryDocuments.firstIndex { $0.id == state.selectedQueryID } ?? 0
+            setSQL(activeQueryDocument.sql)
+            editorBaselineSQL = activeQueryDocument.baseline
+        } else {
+            setSQL(state.sql)
+            editorBaselineSQL = state.dirty ? nil : state.sql
+        }
         queryFontSize = state.fontSize
         sidebarWidth = state.sidebarWidth
         guard let id = state.favoriteID else {
@@ -169,7 +183,92 @@ final class BrowserModel {
         pane.isSortable = false  // property/value pairs
         return pane
     }()
-    @ObservationIgnored private(set) lazy var queryPane = makePane()
+    @ObservationIgnored private(set) lazy var queryDocuments = [QueryDocument(name: "Query 1", pane: makePane())]
+    @ObservationIgnored private(set) var selectedQueryIndex = 0
+    @ObservationIgnored private(set) var queryDocumentsRevision = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var pendingQueryCloseID: UUID? { didSet { stateChanged() } }
+    @ObservationIgnored var editorCursor = 0
+    @ObservationIgnored var editorSelection: Range<Int>?
+    var activeQueryDocument: QueryDocument { queryDocuments[selectedQueryIndex] }
+    var queryPane: ResultPane { activeQueryDocument.pane }
+    var queryDrafts: [QueryDraftState] {
+        queryDocuments.enumerated().map { index, document in
+            QueryDraftState(id: document.id, name: document.name,
+                sql: index == selectedQueryIndex ? sql : document.sql,
+                dirty: index == selectedQueryIndex ? activeSQLIsDirty : document.dirty)
+        }
+    }
+
+    private func captureQueryDocument() {
+        let document = activeQueryDocument
+        document.sql = sql; document.baseline = editorBaselineSQL
+        document.status = queryStatus; document.errorLocation = queryErrorLocation; document.log = statementLog
+        document.statusText = statusMessage; document.error = errorMessage
+        document.browsing = isBrowsing; document.browseSQL = browseSQL
+        document.offset = contentOffset; document.hasMore = contentHasMore
+        document.filter = contentFilter; document.sort = contentSort; document.columns = contentColumns
+        document.filterColumn = filterColumn; document.filterOperator = filterOperator; document.filterValue = filterValue
+        document.tableID = selectedTableID; document.cursor = editorCursor; document.selection = editorSelection
+    }
+    func selectQueryDocument(_ id: UUID) {
+        guard !isRunning, let index = queryDocuments.firstIndex(where: { $0.id == id }), index != selectedQueryIndex else { return }
+        captureQueryDocument()
+        selectedQueryIndex = index
+        let document = activeQueryDocument
+        pendingQuery = nil
+        setSQL(document.sql); editorBaselineSQL = document.baseline
+        editorCursor = document.cursor; editorSelection = document.selection
+        queryStatus = document.status; queryErrorLocation = document.errorLocation; statementLog = document.log
+        statusMessage = document.statusText; errorMessage = document.error
+        // Restore the browse source before enabling paging or server sorting.
+        let browseTable = document.browsing ? tables.first { $0.id == document.tableID } : nil
+        if let browseTable {
+            selectedTableID = browseTable.id
+            if selectedDatabase != browseTable.namespace {
+                selectedDatabase = browseTable.namespace
+                applySelectedDatabase()
+            }
+            loadedTables = [:]
+            clearTablePanes()
+        }
+        isBrowsing = browseTable != nil
+        browseSQL = document.browseSQL; contentOffset = document.offset; contentHasMore = document.hasMore
+        contentFilter = document.filter; contentSort = document.sort; contentColumns = document.columns
+        filterColumn = document.filterColumn; filterOperator = document.filterOperator; filterValue = document.filterValue
+        queryDocumentsRevision += 1
+        scheduleCompletionMetadata()
+    }
+    func addQueryDocument() {
+        guard !isRunning, queryDocuments.count < 1000 else { return }
+        let names = Set(queryDocuments.map(\.name))
+        let number = (1...1001).first { !names.contains("Query \($0)") }!
+        let document = QueryDocument(name: "Query \(number)", pane: makePane())
+        queryDocuments.append(document)
+        selectQueryDocument(document.id)
+    }
+    func closeQueryDocument(_ id: UUID) {
+        guard !isRunning, let index = queryDocuments.firstIndex(where: { $0.id == id }) else { return }
+        if index == selectedQueryIndex ? activeSQLIsDirty : queryDocuments[index].dirty {
+            pendingQueryCloseID = id
+        } else { removeQueryDocument(id) }
+    }
+    func cancelQueryDocumentClose() { pendingQueryCloseID = nil }
+    func confirmQueryDocumentClose() {
+        guard !isRunning, let id = pendingQueryCloseID else { return }
+        pendingQueryCloseID = nil
+        removeQueryDocument(id)
+    }
+    private func removeQueryDocument(_ id: UUID) {
+        guard let index = queryDocuments.firstIndex(where: { $0.id == id }) else { return }
+        if queryDocuments.count == 1 { addQueryDocument() }
+        if index == selectedQueryIndex {
+            selectQueryDocument(queryDocuments[index == 0 ? 1 : index - 1].id)
+        }
+        let selected = activeQueryDocument.id
+        queryDocuments.removeAll { $0.id == id }
+        selectedQueryIndex = queryDocuments.firstIndex { $0.id == selected } ?? 0
+        queryDocumentsRevision += 1
+    }
     @ObservationIgnored private(set) var createStatement = "" { didSet { stateChanged() } }
 
     // MARK: Table browsing (in the Query tab, server-side paging and filtering)
@@ -206,6 +305,36 @@ final class BrowserModel {
     }
     /// What's typed in the filter value field (the GTK entry owns the text).
     @ObservationIgnored var filterValue = ""
+
+    @ObservationIgnored private(set) var completionRevision = 0 { didSet { stateChanged() } }
+    @ObservationIgnored private(set) var completionColumns: [String: [String]] = [:]
+    @ObservationIgnored private var completionTask: Task<Void, Never>?
+    private func scheduleCompletionMetadata() {
+        completionTask?.cancel()
+        guard canUseConnection, !isRunning else { return }
+        let text = sql, revision = sessionRevision
+        completionTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, revision == sessionRevision, canUseConnection, !isRunning else { return }
+            let references = SQLCompletionEngine.references(text, tables: tables, namespace: selectedDatabase, dialect: dialect)
+            let missing = Array(Set(references.values.map(\.id))).filter { completionColumns[$0] == nil }.prefix(8)
+            let targets = missing.compactMap { id in tables.first { $0.id == id } }
+            for table in targets {
+                guard !Task.isCancelled, revision == sessionRevision, !isRunning else { return }
+                guard let statement = dialect.columnsSQL(table) else { continue }
+                let outcome = await fetch(statement)
+                guard revision == sessionRevision else { return }
+                if case .success(let result) = outcome {
+                    completionColumns[table.id] = (0..<result.rowCount).compactMap { result.cell($0, 0, maxLength: nil) }
+                    completionRevision += 1
+                }
+            }
+        }
+    }
+    func editorCompletions(text: String, cursor: Int) -> SQLCompletion? {
+        SQLCompletionEngine.complete(text, cursor: cursor, dialect: dialect, tables: tables,
+            namespace: selectedDatabase, columns: completionColumns)
+    }
 
     // MARK: Query library
 
@@ -301,7 +430,12 @@ final class BrowserModel {
     /// Code that replaces it calls ``setSQL(_:)``. Saved as the connection's
     /// draft shortly after it changes.
     @ObservationIgnored var sql = "" {
-        didSet { if sql != oldValue { scheduleDraftSave(); sessionDidChange?() } }
+        didSet {
+            if sql != oldValue {
+                scheduleDraftSave(); sessionDidChange?(); scheduleCompletionMetadata()
+                if (editorBaselineSQL.map { $0 != oldValue } ?? true) != activeSQLIsDirty { stateChanged() }
+            }
+        }
     }
     /// The connection whose draft the editor holds (its title).
     @ObservationIgnored private var draftKey: String?
@@ -660,7 +794,9 @@ final class BrowserModel {
         selectedTableID = nil
         loadedTables = [:]
         clearTablePanes()
-        queryPane.show(nil)
+        for document in queryDocuments { document.pane.show(nil); document.browsing = false; document.status = nil; document.errorLocation = nil; document.log = []; document.error = nil; document.statusText = "Ready" }
+        completionColumns = [:]
+        completionTask?.cancel()
         errorMessage = nil
     }
 
@@ -769,6 +905,8 @@ final class BrowserModel {
                             ?? databases.first
                     }
                     preferredDatabase = nil
+                    completionColumns = [:]
+                    scheduleCompletionMetadata()
                     applySelectedDatabase()
                     if let restored = pendingSessionRestore {
                         pendingSessionRestore = nil
@@ -850,13 +988,13 @@ final class BrowserModel {
     }
 
     /// Run `sql` off the main actor, counting it as a load in flight.
-    private func fetch(_ sql: String, maxRows: Int = 10_000, readOnly: Bool = false) async -> Result<QueryResult, any Error> {
+    private func fetch(_ sql: String, maxRows: Int = 10_000, readOnly: Bool = false, direct: Bool = false) async -> Result<QueryResult, any Error> {
         guard canUseConnection, let connection else { return .failure(ADBCError("Not connected")) }
         let revision = sessionRevision
         loadsInFlight += 1
         defer { if revision == sessionRevision { loadsInFlight -= 1 } }
         let outcome = await Task.detached {
-            Result { try readOnly ? connection.executeReadOnly(sql, maxRows: maxRows) : connection.execute(sql, maxRows: maxRows) }
+            Result { try readOnly ? connection.executeReadOnly(sql, maxRows: maxRows, usePostgresCopy: !direct) : connection.execute(sql, maxRows: maxRows, usePostgresCopy: !direct) }
         }.value
         guard revision == sessionRevision, self.connection === connection else {
             return .failure(ADBCError("Connection changed"))
@@ -930,6 +1068,7 @@ final class BrowserModel {
                     queryPane.show(result, sortedBy: orderBy == nil ? nil : contentSort)
                     if contentFilter == nil {
                         contentColumns = result.columns.map(\.name)
+                        completionColumns[table.id] = contentColumns
                     }
                     statusMessage = "\(contentRowsLabel) in \(Self.format(result.elapsed))"
                 case .failure(let error):
@@ -1013,12 +1152,12 @@ final class BrowserModel {
               let result = pane.result, row >= 0, row < result.rowCount,
               result.columns.indices.contains(column) else { return nil }
         return CellFilterTarget(column: result.columns[column].name, value: result.cell(row, column, maxLength: nil),
-            tableID: table.id, sessionRevision: sessionRevision, paneRevision: pane.revision)
+            tableID: table.id, sessionRevision: sessionRevision, paneRevision: pane.revision, queryID: activeQueryDocument.id)
     }
 
     func applyCellFilter(_ target: CellFilterTarget, command: Int32) {
         guard (0...2).contains(command) else { return }
-        guard canRun, isBrowsing, selectedTableID == target.tableID,
+        guard canRun, isBrowsing, selectedTableID == target.tableID, target.queryID == activeQueryDocument.id,
               sessionRevision == target.sessionRevision, queryPane.revision == target.paneRevision,
               let table = selectedTable else { return }
         guard let filter = target.filter(for: command) else {
@@ -1154,6 +1293,24 @@ final class BrowserModel {
         run(dialect.statements(in: sql), sourceSQL: sql)
     }
 
+    func explainQuery() {
+        guard canRun else { return }
+        guard dialect == .postgres || dialect == .mysql else {
+            queryStatus = QueryStatus(text: "EXPLAIN unavailable", error: "EXPLAIN is currently supported for PostgreSQL and MySQL.")
+            return
+        }
+        let submission = TextEditorSubmission(text: sql, selection: editorSelection, cursor: editorCursor)
+        let statements = submission.selectedText.map { dialect.statements(in: $0) }
+            ?? dialect.statement(in: sql, at: editorCursor).map { [$0] } ?? []
+        guard statements.count == 1, let statement = statements.first,
+              SQLSafetyAssessment(statement.text, dialect: dialect).allowsReadOnly,
+              !statement.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("EXPLAIN") else {
+            queryStatus = QueryStatus(text: "Choose one query to explain", error: "Place the cursor in a read-only statement or select exactly one. EXPLAIN never adds ANALYZE.")
+            return
+        }
+        run(dialect.statements(in: "EXPLAIN " + statement.text), sourceSQL: sql, explaining: true)
+    }
+
     /// Ctrl+Enter: runs the selected statements, or else the statement the
     /// cursor is in.
     func runCurrentStatement(_ submission: TextEditorSubmission) {
@@ -1167,7 +1324,7 @@ final class BrowserModel {
 
     /// Runs statements one after another, stopping at the first error, and
     /// shows the last result that has columns.
-    private func run(_ statements: [SQLStatement], sourceSQL: String, baseOffset: Int = 0, confirmed: Bool = false) {
+    private func run(_ statements: [SQLStatement], sourceSQL: String, baseOffset: Int = 0, confirmed: Bool = false, explaining: Bool = false) {
         guard connection != nil, canRun else { return }
         guard !statements.isEmpty else {
             statusMessage = "Nothing to run"
@@ -1232,7 +1389,8 @@ final class BrowserModel {
                 queryStatus = QueryStatus(text: statements.count > 1 ? "Running statement \(index + 1) of \(statements.count)…" : "Running…")
                 let historyID = recordHistory(statement.text, connectionTitle: historyConnection)
                 let statementStarted = clock.now
-                let outcome = await fetch(statement.text, maxRows: runMaxRows, readOnly: readOnly)
+                let plan = explaining || SQLCompletionEngine.scan(statement.text).tokens.first?.text.uppercased() == "EXPLAIN"
+                let outcome = await fetch(statement.text, maxRows: runMaxRows, readOnly: readOnly, direct: plan && dialect == .postgres)
                 // Persist the attempted statement's outcome even if disconnect or
                 // connection loss invalidated this run's UI while it was fetching.
                 finishHistory(historyID, elapsed: clock.now - statementStarted, result: try? outcome.get())
@@ -1257,7 +1415,7 @@ final class BrowserModel {
                         let cancelled = queryCancellationRequested || (adbcError.map { $0.message.contains("[CANCELLED]") || $0.message.contains("[SQLSTATE 57014]") } ?? false)
                         statusMessage = cancelled ? "Query cancelled" : "Query failed"
                         queryStatus = .failed(message, elapsed: started.duration(to: clock.now), cancelled: cancelled)
-                        if sql == sourceSQL {
+                        if !explaining, sql == sourceSQL {
                             queryErrorLocation = QueryErrorLocation.resolve(position: adbcError?.statementPosition,
                                 statement: statement, source: sourceSQL, baseOffset: baseOffset)
                         }
@@ -1269,7 +1427,7 @@ final class BrowserModel {
                 queryPane.show(shown)
                 let completed = QueryStatus.completed(shown, elapsed: elapsed, statements: statements.count, maxRows: runMaxRows)
                 queryStatus = completed
-                if sql == sourceSQL { editorBaselineSQL = sql }
+                if !explaining, sql == sourceSQL { editorBaselineSQL = sql }
                 statusMessage = completed.text
             }
         }

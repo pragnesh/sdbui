@@ -311,8 +311,8 @@ static void statement_stream_release(struct ArrowArrayStream* stream) {
   free(owner);
 }
 
-AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
-                             struct ArrowArrayStream* out, int64_t* rows_affected,
+AdbcStatusCode cadbc_execute_options(CAdbcSession* session, const char* sql,
+                             int disable_postgres_copy, struct ArrowArrayStream* out, int64_t* rows_affected,
                              int64_t* error_position, char** error_out) {
   if (error_position) *error_position = 0;
   struct StatementStream* owner = calloc(1, sizeof(*owner));
@@ -332,6 +332,21 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
     return status;
   }
 
+  if (disable_postgres_copy) {
+    error = make_error();
+    status = session->driver.StatementSetOption
+        ? session->driver.StatementSetOption(&owner->statement,
+            "adbc.postgresql.use_copy", ADBC_OPTION_VALUE_DISABLED, &error)
+        : ADBC_STATUS_NOT_IMPLEMENTED;
+    if (status != ADBC_STATUS_OK) {
+      take_error(status, &error, "Could not disable PostgreSQL COPY for this statement", error_out);
+      error = make_error();
+      session->driver.StatementRelease(&owner->statement, &error);
+      if (error.release) error.release(&error);
+      free(owner);
+      return status;
+    }
+  }
   error = make_error();
   status = session->driver.StatementSetSqlQuery(&owner->statement, sql, &error);
   if (status != ADBC_STATUS_OK) {
@@ -360,6 +375,12 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
     statement_stream_release(&wrapped);
   }
   return status;
+}
+
+AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
+                             struct ArrowArrayStream* out, int64_t* rows_affected,
+                             int64_t* error_position, char** error_out) {
+  return cadbc_execute_options(session, sql, 0, out, rows_affected, error_position, error_out);
 }
 
 AdbcStatusCode cadbc_cancel(CAdbcSession* session, char** error_out) {
