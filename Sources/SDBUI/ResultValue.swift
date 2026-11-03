@@ -67,7 +67,8 @@ import SwiftCrossUI
 @MainActor
 private final class GridValueSource {
     let pane: ResultPane
-    init(_ pane: ResultPane) { self.pane = pane }
+    weak var model: BrowserModel?
+    init(_ pane: ResultPane, model: BrowserModel) { self.pane = pane; self.model = model }
 }
 
 private let valuePreview: SDBUIValuePreview = { context, row, column in
@@ -104,12 +105,40 @@ private let destroyValueSource: SDBUIValueDestroy = { context in
     if let context { Unmanaged<GridValueSource>.fromOpaque(context).release() }
 }
 
+@MainActor
+private final class PreparedCellFilter {
+    weak var model: BrowserModel?
+    let target: CellFilterTarget
+    init(model: BrowserModel, target: CellFilterTarget) { self.model = model; self.target = target }
+}
+private let prepareFilter: SDBUIFilterPrepare = { context, row, column in
+    let prepared: PreparedCellFilter? = MainActor.assumeIsolated {
+        guard let context else { return nil }
+        let source = Unmanaged<GridValueSource>.fromOpaque(context).takeUnretainedValue()
+        guard let model = source.model,
+              let target = model.cellFilterTarget(in: source.pane, row: Int(row), column: Int(column)) else { return nil }
+        return PreparedCellFilter(model: model, target: target)
+    }
+    return prepared.map { Unmanaged.passRetained($0).toOpaque() }
+}
+private let applyFilter: SDBUIFilterApply = { context, command in
+    MainActor.assumeIsolated {
+        guard let context else { return }
+        let prepared = Unmanaged<PreparedCellFilter>.fromOpaque(context).takeUnretainedValue()
+        prepared.model?.applyCellFilter(prepared.target, command: command)
+    }
+}
+private let destroyFilter: SDBUIValueDestroy = { context in
+    if let context { Unmanaged<PreparedCellFilter>.fromOpaque(context).release() }
+}
+
 extension DataGrid {
-    func inspectingValues(in pane: ResultPane) -> some View {
+    func inspectingValues(in pane: ResultPane, model: BrowserModel) -> some View {
         inspect([.onCreate, .afterUpdate]) { widget in
-            let context = Unmanaged.passRetained(GridValueSource(pane)).toOpaque()
+            let context = Unmanaged.passRetained(GridValueSource(pane, model: model)).toOpaque()
             sdbui_value_install(UnsafeMutableRawPointer(widget.widgetPointer), context,
                                 valuePreview, activateValue, destroyValueSource)
+            sdbui_value_filters(UnsafeMutableRawPointer(widget.widgetPointer), prepareFilter, applyFilter, destroyFilter)
         }
     }
 }

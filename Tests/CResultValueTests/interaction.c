@@ -6,6 +6,7 @@
 static GMainLoop *loop;
 static GtkWidget *grid;
 static int previews, activations;
+static void settle_layout(void);
 static const char *raw = "{\"n\":123456789012345678901234567890}";
 static const char *pretty = "{\n  \"n\": 123456789012345678901234567890\n}";
 
@@ -37,9 +38,41 @@ static void activate(void *context, void *widget, uint32_t row, uint32_t column)
     activations++;
     sdbui_value_show(widget, "Value regression test", raw, strlen(raw), pretty, 0);
 }
+static guint filter_prepared, filter_applied, filter_destroyed;
+static gboolean filter_enabled = TRUE;
+static void *prepare_cell_filter(void *context, uint32_t row, uint32_t column) {
+    (void)context;
+    g_assert_cmpuint(row, ==, 0); g_assert_cmpuint(column, ==, 0);
+    if (!filter_enabled) return NULL;
+    filter_prepared++;
+    int *snapshot = g_new(int, 1); *snapshot = 42;
+    return snapshot;
+}
+static void apply_cell_filter(void *snapshot, int32_t command) {
+    g_assert_cmpint(*(int *)snapshot, ==, 42);
+    g_assert_cmpint(command, ==, 1);
+    filter_applied++;
+}
+static void destroy_cell_filter(void *snapshot) { filter_destroyed++; g_free(snapshot); }
+static void copy_popup(GtkGestureClick *gesture, gint count, gdouble x, gdouble y, gpointer data) {
+    (void)count; (void)x; (void)y; (void)data;
+    GtkWidget *cell = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    GMenu *menu = g_menu_new();
+    g_menu_append(menu, "Copy Cell", "copy.cell");
+    GtkWidget *popover = gtk_popover_menu_new_from_model(G_MENU_MODEL(menu));
+    g_object_unref(menu);
+    gtk_widget_set_parent(popover, cell);
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+
 static void setup(GtkSignalListItemFactory *factory, GObject *object, gpointer data) {
     (void)factory; (void)data;
-    gtk_list_item_set_child(GTK_LIST_ITEM(object), gtk_inscription_new(NULL));
+    GtkWidget *cell = gtk_inscription_new(NULL);
+    gtk_list_item_set_child(GTK_LIST_ITEM(object), cell);
+    GtkGesture *right = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(right), GDK_BUTTON_SECONDARY);
+    g_signal_connect(right, "pressed", G_CALLBACK(copy_popup), NULL);
+    gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(right));
 }
 static void bind(GtkSignalListItemFactory *factory, GObject *object, gpointer data) {
     (void)factory; (void)data;
@@ -75,10 +108,40 @@ static gboolean verify(gpointer data) {
     g_signal_emit_by_name(cell, "query-tooltip", 0, 0, FALSE, tooltip, &handled);
     g_assert_false(handled); g_assert_cmpint(previews, ==, 1);
     g_object_unref(tooltip);
+    GListModel *right_controllers = gtk_widget_observe_controllers(cell);
+    for (int phase = 0; phase < 2; phase++) {
+        for (guint i = 0; i < g_list_model_get_n_items(right_controllers); i++) {
+            GObject *controller = g_list_model_get_item(right_controllers, i);
+            gboolean capture = gtk_event_controller_get_propagation_phase(GTK_EVENT_CONTROLLER(controller)) == GTK_PHASE_CAPTURE;
+            if (GTK_IS_GESTURE_CLICK(controller) && capture == (phase == 0) &&
+                gtk_gesture_single_get_button(GTK_GESTURE_SINGLE(controller)) == GDK_BUTTON_SECONDARY) {
+                g_signal_emit_by_name(controller, "pressed", 1, 1.0, 1.0);
+            }
+            g_object_unref(controller);
+        }
+    }
+    g_object_unref(right_controllers);
+    GtkWidget *popover = find(cell, GTK_TYPE_POPOVER_MENU);
+    g_assert_nonnull(popover);
+    GMenuModel *menu = gtk_popover_menu_get_menu_model(GTK_POPOVER_MENU(popover));
+    g_assert_cmpint(g_menu_model_get_n_items(menu), ==, 2);
+    GMenuModel *copy = g_menu_model_get_item_link(menu, 0, G_MENU_LINK_SECTION);
+    char *title = NULL;
+    g_assert_true(g_menu_model_get_item_attribute(copy, 0, G_MENU_ATTRIBUTE_LABEL, "s", &title));
+    g_assert_cmpstr(title, ==, "Copy Cell"); g_free(title); g_object_unref(copy);
+    GMenuModel *filters = g_menu_model_get_item_link(menu, 1, G_MENU_LINK_SUBMENU);
+    g_assert_cmpint(g_menu_model_get_n_items(filters), ==, 3);
+    g_object_unref(filters);
+    g_assert_cmpuint(filter_prepared, ==, 1);
+    g_assert_true(gtk_widget_activate_action(popover, "cellfilter.apply", "i", 1));
+    g_assert_cmpuint(filter_applied, ==, 1);
+    gtk_popover_popdown(GTK_POPOVER(popover));
+    settle_layout();
+    gtk_widget_unparent(popover);
     GListModel *controllers = gtk_widget_observe_controllers(cell);
     for (guint i = 0; i < g_list_model_get_n_items(controllers); i++) {
         GObject *controller = g_list_model_get_item(controllers, i);
-        if (GTK_IS_GESTURE_CLICK(controller)) g_signal_emit_by_name(controller, "pressed", 2, 1.0, 1.0);
+        if (GTK_IS_GESTURE_CLICK(controller) && gtk_gesture_single_get_button(GTK_GESTURE_SINGLE(controller)) == GDK_BUTTON_PRIMARY) g_signal_emit_by_name(controller, "pressed", 2, 1.0, 1.0);
         g_object_unref(controller);
     }
     g_object_unref(controllers);
@@ -271,6 +334,7 @@ int main(void) {
     grid = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid), view);
     sdbui_value_install(grid, NULL, preview, activate, NULL);
+    sdbui_value_filters(grid, prepare_cell_filter, apply_cell_filter, destroy_cell_filter);
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(setup), NULL);
     g_signal_connect(factory, "bind", G_CALLBACK(bind), NULL);
@@ -288,6 +352,8 @@ int main(void) {
     g_main_loop_run(loop);
     gtk_window_destroy(GTK_WINDOW(window));
     g_main_loop_unref(loop);
-    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection\n");
+    settle_layout();
+    g_assert_cmpuint(filter_destroyed, ==, 1);
+    g_print("Value interactions passed: hover, activation, JSON toggle, exact clipboard copy, Unicode cursor navigation, keyboard command routing, session window/sidebar persistence, virtualized table selection, cell filter submenu\n");
     return 0;
 }

@@ -320,7 +320,7 @@ struct PaneGrid: View {
             cell: { row, column in pane.cell(row: row, column: column) }
         )
         #if canImport(GtkBackend)
-            return grid.inspectingValues(in: pane)
+            return grid.inspectingValues(in: pane, model: model)
         #else
             return grid
         #endif
@@ -373,7 +373,7 @@ struct FilterBar: View {
             of: {
                 [
                     AnyHashable(model.isBrowsing), model.contentColumns, model.filterColumn,
-                    model.filterOperator?.rawValue, model.contentFilter == nil,
+                    model.filterOperator?.rawValue, model.contentFilter == nil, model.filterValue,
                 ]
             }
         ) {
@@ -398,6 +398,7 @@ struct FilterBar: View {
                     "Value",
                     text: Binding(get: { model.filterValue }, set: { model.filterValue = $0 })
                 )
+                .disabled(model.filterOperator?.needsValue == false)
                 .onSubmit { model.applyContentFilter() }
                 Button("Filter") { model.applyContentFilter() }
                     .disabled(columns.isEmpty)

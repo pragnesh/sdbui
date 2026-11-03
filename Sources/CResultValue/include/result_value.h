@@ -24,4 +24,7 @@ typedef void (*SDBUITableSelect)(void *context, uint32_t index);
 void sdbui_table_list_install(void *root, void *context, SDBUITableSelect select, SDBUIValueDestroy destroy);
 void *sdbui_table_list_context(void *root);
 void sdbui_table_list_update(void *root, const char *const *labels, int replace, uint32_t selected, int width, int height);
+typedef void *(*SDBUIFilterPrepare)(void *context, uint32_t row, uint32_t column);
+typedef void (*SDBUIFilterApply)(void *snapshot, int32_t command);
+void sdbui_value_filters(void *grid, SDBUIFilterPrepare prepare, SDBUIFilterApply apply, SDBUIValueDestroy destroy);
 #endif

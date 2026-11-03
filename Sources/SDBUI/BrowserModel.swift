@@ -943,6 +943,31 @@ final class BrowserModel {
         loadContent(table)
     }
 
+    func cellFilterTarget(in pane: ResultPane, row: Int, column: Int) -> CellFilterTarget? {
+        guard pane === queryPane, isBrowsing, canRun, let table = selectedTable,
+              let result = pane.result, row >= 0, row < result.rowCount,
+              result.columns.indices.contains(column) else { return nil }
+        return CellFilterTarget(column: result.columns[column].name, value: result.cell(row, column, maxLength: nil),
+            tableID: table.id, sessionRevision: sessionRevision, paneRevision: pane.revision)
+    }
+
+    func applyCellFilter(_ target: CellFilterTarget, command: Int32) {
+        guard (0...2).contains(command) else { return }
+        guard canRun, isBrowsing, selectedTableID == target.tableID,
+              sessionRevision == target.sessionRevision, queryPane.revision == target.paneRevision,
+              let table = selectedTable else { return }
+        guard let filter = target.filter(for: command) else {
+            errorMessage = "This value cannot be represented by the text filter (embedded NUL)."
+            return
+        }
+        filterColumn = filter.column
+        filterOperator = filter.op
+        filterValue = filter.value
+        contentFilter = filter
+        contentOffset = 0
+        loadContent(table)
+    }
+
     func clearContentFilter() {
         guard canUseConnection else { return }
         guard let table = selectedTable, contentFilter != nil else { return }

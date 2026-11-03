@@ -8,6 +8,9 @@ typedef struct {
     SDBUIValuePreview preview;
     SDBUIValueActivate activate;
     SDBUIValueDestroy destroy;
+    SDBUIFilterPrepare filter_prepare;
+    SDBUIFilterApply filter_apply;
+    SDBUIValueDestroy filter_destroy;
 } ValueSource;
 
 typedef struct {
@@ -59,6 +62,88 @@ static void double_clicked(GtkGestureClick *gesture, gint presses, gdouble x, gd
     }
 }
 
+typedef struct { void *snapshot; SDBUIFilterApply apply; SDBUIValueDestroy destroy; } FilterAction;
+static void filter_action_free(gpointer data) {
+    FilterAction *action = data;
+    if (action->destroy) action->destroy(action->snapshot);
+    g_free(action);
+}
+static void filter_action_activated(GSimpleAction *action, GVariant *parameter, gpointer data) {
+    (void)action;
+    FilterAction *filter = data;
+    if (filter->apply) filter->apply(filter->snapshot, g_variant_get_int32(parameter));
+}
+static gboolean release_filter_menu(gpointer data) {
+    GtkWidget *popover = data;
+    /* GTK can cache a closed menu. Drop captured values and actions promptly,
+     * but only on idle, after the selected action has finished dispatching. */
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), NULL);
+    gtk_widget_insert_action_group(popover, "cellfilter", NULL);
+    return G_SOURCE_REMOVE;
+}
+static void filter_menu_closed(GtkPopover *popover, gpointer data) {
+    (void)data;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, release_filter_menu, g_object_ref(popover), g_object_unref);
+}
+/* Extend the public menu before it is mapped: GTK otherwise keeps the old
+ * visible page when replacing the model of an already-open popover. */
+static void append_cell_filters(GtkWidget *cell, GtkWidget *popover) {
+    ColumnSource *column = g_object_get_data(G_OBJECT(cell), "sdbui-value-cell");
+    if (!column) return;
+    guint position = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(cell), "sdbui-value-row"));
+    ValueSource *source = g_object_get_data(G_OBJECT(column->grid), "sdbui-values");
+    if (!position || !source || !source->filter_prepare || !GTK_IS_POPOVER_MENU(popover) ||
+        g_object_get_data(G_OBJECT(popover), "sdbui-cell-filter")) return;
+    void *snapshot = source->filter_prepare(source->context, position - 1, column->column);
+    if (!snapshot) return;
+    FilterAction *filter = g_new0(FilterAction, 1);
+    filter->snapshot = snapshot; filter->apply = source->filter_apply; filter->destroy = source->filter_destroy;
+    GSimpleActionGroup *group = g_simple_action_group_new();
+    GSimpleAction *action = g_simple_action_new("apply", G_VARIANT_TYPE_INT32);
+    g_signal_connect(action, "activate", G_CALLBACK(filter_action_activated), filter);
+    g_object_set_data_full(G_OBJECT(action), "sdbui-cell-filter", filter, filter_action_free);
+    g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
+    g_object_unref(action);
+    gtk_widget_insert_action_group(popover, "cellfilter", G_ACTION_GROUP(group));
+    g_object_unref(group);
+    GMenu *combined = g_menu_new(), *commands = g_menu_new();
+    GMenuModel *original = gtk_popover_menu_get_menu_model(GTK_POPOVER_MENU(popover));
+    if (original) g_menu_append_section(combined, NULL, original);
+    g_menu_append(commands, "=", "cellfilter.apply(0)");
+    g_menu_append(commands, "!=", "cellfilter.apply(1)");
+    g_menu_append(commands, "IS NULL", "cellfilter.apply(2)");
+    g_menu_append_submenu(combined, "Filter by this value", G_MENU_MODEL(commands));
+    g_signal_connect(popover, "closed", G_CALLBACK(filter_menu_closed), NULL);
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(popover), G_MENU_MODEL(combined));
+    g_object_set_data(G_OBJECT(popover), "sdbui-cell-filter", GINT_TO_POINTER(1));
+    g_object_unref(commands); g_object_unref(combined);
+}
+
+typedef struct { GtkWidget *cell; GListModel *children; gulong handler; } PopoverWatch;
+static void cell_children_changed(GListModel *children, guint position, guint removed, guint added, gpointer data) {
+    (void)removed;
+    for (guint index = position; index < position + added; index++) {
+        GObject *child = g_list_model_get_item(children, index);
+        if (GTK_IS_POPOVER_MENU(child)) append_cell_filters(GTK_WIDGET(data), GTK_WIDGET(child));
+        g_object_unref(child);
+    }
+}
+static void release_popover_watch(gpointer data) {
+    PopoverWatch *watch = data;
+    g_signal_handler_disconnect(watch->children, watch->handler);
+    g_object_unref(watch->children); g_object_unref(watch->cell); g_free(watch);
+}
+static void watch_cell_popover(GtkGestureClick *gesture, gint presses, gdouble x, gdouble y, gpointer data) {
+    (void)presses; (void)x; (void)y; (void)data;
+    /* Observe only during one right-click dispatch, not on every recycled cell.
+     * The backend parents its copy popover before calling gtk_popover_popup(). */
+    PopoverWatch *watch = g_new0(PopoverWatch, 1);
+    watch->cell = g_object_ref(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)));
+    watch->children = gtk_widget_observe_children(watch->cell);
+    watch->handler = g_signal_connect(watch->children, "items-changed", G_CALLBACK(cell_children_changed), watch->cell);
+    g_idle_add_once(release_popover_watch, watch);
+}
+
 static void setup_cell(GtkSignalListItemFactory *factory, GObject *object, gpointer data) {
     (void)factory;
     GtkWidget *cell = gtk_list_item_get_child(GTK_LIST_ITEM(object));
@@ -74,6 +159,11 @@ static void setup_cell(GtkSignalListItemFactory *factory, GObject *object, gpoin
     gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gesture), GTK_PHASE_CAPTURE);
     g_signal_connect(gesture, "pressed", G_CALLBACK(double_clicked), data);
     gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(gesture));
+    GtkGesture *right = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(right), GDK_BUTTON_SECONDARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(right), GTK_PHASE_CAPTURE);
+    g_signal_connect(right, "pressed", G_CALLBACK(watch_cell_popover), NULL);
+    gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(right));
 }
 
 static void bind_cell(GtkSignalListItemFactory *factory, GObject *object, gpointer data) {
@@ -150,6 +240,12 @@ void sdbui_value_install(void *widget, void *context, SDBUIValuePreview preview,
         g_object_set_data(G_OBJECT(grid), "sdbui-value-observing", GINT_TO_POINTER(1));
     }
     install_columns(grid);
+}
+
+void sdbui_value_filters(void *grid, SDBUIFilterPrepare prepare, SDBUIFilterApply apply, SDBUIValueDestroy destroy) {
+    ValueSource *source = g_object_get_data(G_OBJECT(grid), "sdbui-values");
+    if (!source) return;
+    source->filter_prepare = prepare; source->filter_apply = apply; source->filter_destroy = destroy;
 }
 
 typedef struct {

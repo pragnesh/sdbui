@@ -106,6 +106,8 @@ Numbers are right-aligned and headers show each column's type. Click a header
 to sort; select rows with Shift/Ctrl-click and press Ctrl+C, or right-click a
 cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
+For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current single-column filter, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
+
 Structure and Table Info use `information_schema` / `pg_catalog` for MySQL,
 MariaDB and PostgreSQL; other databases show the columns ADBC reports.
 
