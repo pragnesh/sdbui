@@ -149,7 +149,7 @@ final class SQLDialectTests: XCTestCase {
         XCTAssertEqual(SQLDialect(vendorName: "MySQL"), .mysql)
         XCTAssertEqual(SQLDialect(vendorName: "MariaDB"), .mysql)
         XCTAssertEqual(SQLDialect(vendorName: "PostgreSQL"), .postgres)
-        XCTAssertEqual(SQLDialect(vendorName: "DuckDB"), .generic)
+        XCTAssertEqual(SQLDialect(vendorName: "DuckDB"), .duckdb)
         XCTAssertEqual(SQLDialect(vendorName: nil), .generic)
     }
 

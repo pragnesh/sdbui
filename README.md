@@ -303,8 +303,8 @@ confirmation and requests cancellation while preserving editor SQL. The initial
 connection screen provides driver installation commands and **Re-scan drivers**;
 an empty Query view lists the main keyboard shortcuts.
 
-Structure and Table Info use `information_schema` / `pg_catalog` for MySQL,
-MariaDB and PostgreSQL; other databases show the columns ADBC reports.
+Structure and Table Info use native catalogs for MySQL/MariaDB, PostgreSQL,
+SQLite and DuckDB; other databases show the columns ADBC reports.
 
 Also:
 
@@ -404,7 +404,7 @@ color = "Red" # None, Red, Orange, Yellow, Green, Blue, Purple
 read_only = true
 ```
 
-Read-only favorites allow conservative read queries and execute each in a database-enforced read-only transaction on PostgreSQL and MySQL. Unsupported drivers block manual SQL in this mode. Transaction commands, writes, data-changing CTEs, and `SELECT INTO` are blocked before any statement in a batch runs. Use a database account with restricted permissions for access control; these safeguards do not prevent every side effect of database functions or external services. Changing a favorite's settings takes effect when opening a new connection.
+Read-only favorites allow conservative read queries and execute each in a database-enforced read-only transaction on PostgreSQL, MySQL and DuckDB. SQLite uses a transaction with verified `PRAGMA query_only`, restoring the previous setting afterward. Unsupported drivers block manual SQL in this mode. Transaction commands, writes, data-changing CTEs, and `SELECT INTO` are blocked before any statement in a batch runs. Use a database account with restricted permissions for access control; these safeguards do not prevent every side effect of database functions or external services. Changing a favorite's settings takes effect when opening a new connection.
 
 Run All, Ctrl+Enter (selection/current statement), and launch-time SQL require confirmation for `DELETE`/`UPDATE` without a `WHERE` in the same scope, and for `DROP`/`TRUNCATE`. A review panel shows the submitted batch before **any** of it executes. Cancel leaves it unexecuted; editing SQL or changing the connection/schema invalidates approval. Confirmation applies to one run only. Detection ignores quoted strings, identifiers and ordinary comments, handles CTEs and nested queries, and conservatively flags executable MySQL comments. It is a lexical safeguard, so unusual SQL can produce extra warnings.
 
@@ -429,12 +429,69 @@ To run isolated OpenSSH/PostgreSQL integration checks (Python `paramiko` and
 PostgreSQL server tools required): `python3 scripts/test-ssh-integration.py`.
 This uses temporary keys, known-host files and a temporary database.
 
+## Preferences and embedded databases
+
+Open **Preferences** beside **New connection**, or press Ctrl+, (Command+, on
+macOS). Set the browsing page size (50–10,000), editor font (9–28), manual-query
+row limit (100–1,000,000), and System/Light/Dark appearance. Defaults are 1,000
+rows per page, 13-point text, a 10,000-row query limit and System appearance.
+Apply updates open connections and future tabs; changing the page size reloads
+browsing from the first page. Apply is disabled while a connection or query is
+busy. Font shortcuts remain available, and restored tabs retain their saved font.
+
+Preferences are stored atomically with owner-only file permissions in
+`preferences.json` beside the query library. An unreadable file is preserved;
+move it aside before saving replacement settings.
+
+Install `sqlite` or `duckdb` with dbc. In URI mode, use
+`sqlite:///absolute/path/database.sqlite` or `duckdb:///absolute/path/database.duckdb`;
+DuckDB profiles may also provide the driver's `path` option. These dialects
+support browsing, quoted identifiers, literal-value filters, native column/index/
+foreign-key/view metadata and EXPLAIN. SQLite exposes triggers; DuckDB does not
+support triggers. DuckDB relations retain catalog and schema qualification.
+CSV, JSON, Arrow and Parquet table exports are available; row editing, CSV
+import and SQL dump export currently require PostgreSQL/MySQL.
+
+MySQL CSV import stages mapped columns in a private temporary table before
+appending to the target in one transaction, preserving omitted defaults and
+generated columns. The account needs `CREATE TEMPORARY TABLES` permission.
+The Foundry MySQL driver receives its native `tls` option translated from the
+connection form's SSL mode; existing explicit TLS options take priority.
+
+## Quality checks
+
+CI tests PostgreSQL 16 and MySQL 8.4 containers on both Linux architectures,
+plus SQLite and DuckDB drivers. It exercises metadata, read-only execution,
+row mutations, transactional CSV rollback and whole-table transfer formats.
+Light/dark headless GTK checks run real SQLite queries, paging, preferences and
+shortcuts, and retain screenshots and application logs as workflow artifacts.
+macOS jobs run embedded-driver and AppKit tests before bundling the application.
+
+To install the pinned public test drivers with dbc:
+
+```sh
+scripts/quality-drivers.sh
+export ADBC_DRIVER_PATH="$PWD/.build/quality-drivers/config/adbc/drivers"
+SDBUI_TEST_EMBEDDED=1 swift test
+scripts/test-quality-ui.sh
+```
+
+The pinned versions are PostgreSQL/SQLite 1.13.0, MySQL 0.7.1 and DuckDB 2.0.0.
+The UI script needs Xvfb, xauth, Python GI/Pillow and the AT-SPI typelib, and
+uses isolated profile/session/preferences directories. For network tests, set
+`SDBUI_TEST_POSTGRES_URI` and `SDBUI_TEST_MYSQL_URI` to disposable test databases;
+`SDBUI_REQUIRE_NETWORK_DRIVERS=1` makes missing network fixtures fail.
+`python3 scripts/test-mysql-local.py` starts a private MySQL server when `mysqld`
+is installed. Add `--all` to also start the PostgreSQL/SSH fixtures and run the
+complete suite (PostgreSQL server tools and Python paramiko required).
+The fixtures use temporary data directories and do not modify existing servers.
+
 ## Limitations
 
-- One statement per Run (drivers generally reject multi-statement strings).
+- Run All submits statements individually and stops at the first error.
 - The Query tab keeps at most "Max rows" rows. The grid shows up to 1000
   characters per cell; copy and CSV export use full values.
-- Results are read-only (no cell editing).
+- Cell editing, CSV import and SQL dump export require PostgreSQL or transactional MySQL tables. Other result grids are read-only.
 
 ## Performance notes
 

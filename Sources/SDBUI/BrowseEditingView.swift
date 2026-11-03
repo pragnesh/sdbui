@@ -99,7 +99,7 @@ struct RowEditingBar: View {
                 else if model.canEditRows { Text("Right-click a cell to edit or delete its row.").font(.caption) }
                 else if let id = model.selectedTableID, let metadata = model.editMetadata[id] {
                     Text(metadata.transactional ? "Updates/deletes require a supported primary key." : "This is not a transactional base table.").font(.caption)
-                } else { Text(model.dialect == .generic ? "Row editing supports PostgreSQL and MySQL tables." : (model.editMetadataError.isEmpty ? "Loading row metadata…" : model.editMetadataError)).font(.caption) }
+                } else { Text(!model.dialect.supportsTableWrites ? "Row editing supports PostgreSQL and MySQL tables." : (model.editMetadataError.isEmpty ? "Loading row metadata…" : model.editMetadataError)).font(.caption) }
                 if !model.editFeedback.isEmpty { Text(model.editFeedback).font(.caption) }
                 Spacer()
             }

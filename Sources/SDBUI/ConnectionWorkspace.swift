@@ -36,11 +36,34 @@ final class ConnectionWorkspace {
     private(set) var sessionFeedback = ""
     private(set) var pendingCloseID: UUID?
 
+    @ObservationIgnored private let preferencesStore: PreferencesStore
+    private(set) var preferences: AppPreferences
+    var preferencesDraft: AppPreferences
+    var preferencesVisible = false
+    var preferencesFeedback = ""
+    var canApplyPreferences: Bool { tabs.allSatisfy { !$0.model.isRunning && !$0.model.isConnecting } && preferencesDraft.isValid }
+    func showPreferences() { preferencesDraft = preferences; preferencesVisible.toggle() }
+    func applyPreferences() {
+        guard canApplyPreferences else { return }
+        do {
+            try preferencesStore.save(preferencesDraft)
+            preferences = preferencesDraft
+            for tab in tabs { tab.model.applyPreferences(preferences) }
+            preferencesFeedback = "Preferences saved."; preferencesVisible = false
+            scheduleSessionSave()
+        } catch { preferencesFeedback = "Could not save preferences: \(error.localizedDescription)" }
+    }
+
     var pendingCloseTab: Tab? { tabs.first { $0.id == pendingCloseID } }
 
 
-    init(sessionStore: SessionStore? = nil, makeModel: @escaping @MainActor () -> BrowserModel = { BrowserModel() }) {
+    init(sessionStore: SessionStore? = nil, preferencesStore: PreferencesStore = PreferencesStore(), makeModel: @escaping @MainActor () -> BrowserModel = { BrowserModel() }) {
         self.makeModel = makeModel
+        self.preferencesStore = preferencesStore
+        let storedPreferences = preferencesStore.load()
+        self.preferences = storedPreferences
+        self.preferencesDraft = storedPreferences
+        self.preferencesFeedback = preferencesStore.loadError ?? ""
         self.sessionStore = sessionStore
         loadedSession = sessionStore?.load()
         windowWidth = loadedSession?.width ?? 1200
@@ -76,6 +99,7 @@ final class ConnectionWorkspace {
     }
 
     private func attach(_ model: BrowserModel) {
+        model.applyPreferences(preferences, refresh: false)
         model.sessionDidChange = { [weak self] in self?.scheduleSessionSave() }
     }
 
@@ -166,6 +190,19 @@ final class ConnectionWorkspace {
 
 struct ConnectionWorkspaceView: View {
     var workspace: ConnectionWorkspace
+    @Environment(\.colorScheme) private var systemColorScheme
+    private var appearance: ColorScheme {
+        switch workspace.preferences.appearance {
+        case .system:
+            #if canImport(GtkBackend)
+            return GTKAppearance.shared.systemDark ? .dark : .light
+            #else
+            return systemColorScheme
+            #endif
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -192,6 +229,7 @@ struct ConnectionWorkspaceView: View {
                         }
                     }
                 }
+                Button("Preferences") { workspace.showPreferences() }.fixedSize()
                 Button("+ New connection") { workspace.addTab() }
                     .fixedSize()
             }
@@ -215,9 +253,12 @@ struct ConnectionWorkspaceView: View {
                 .padding(8)
                 Divider()
             }
+            if workspace.preferencesVisible { PreferencesView(workspace: workspace); Divider() }
             ConnectionPages(tabs: workspace.tabs, selectedID: workspace.selectedID)
             .frame(maxHeight: .infinity)
         }
+        .environment(\.colorScheme, appearance)
+        .workspaceAppearance(workspace.preferences.appearance)
         .workspaceShortcuts(workspace)
         .persistingWorkspaceWindow(workspace)
     }

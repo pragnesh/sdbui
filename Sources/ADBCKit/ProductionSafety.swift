@@ -66,7 +66,7 @@ enum SafetyLexer {
                 }
                 if nesting != 0 { append("UNSAFE") }; continue
             }
-            if c == "'" || c == "\"" || c == "`" || (c == "[" && dialect == .generic) {
+            if c == "'" || c == "\"" || c == "`" || (c == "[" && (dialect == .generic || dialect == .sqlite)) {
                 let quote: Unicode.Scalar = c == "[" ? "]" : c
                 // PostgreSQL E'...' and MySQL strings accept backslash escapes.
                 let escaped = dialect == .mysql || (i > 0 && (s[i - 1] == "E" || s[i - 1] == "e"))

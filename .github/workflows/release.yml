@@ -20,6 +20,33 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: sdbui_test
+          POSTGRES_DB: sdbui_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sdbui_test -d sdbui_test"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_DATABASE: sdbui_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 5s --health-timeout 5s --health-retries 40
+    env:
+      ADBC_DRIVER_PATH: ${{ github.workspace }}/.build/quality-drivers/config/adbc/drivers
+      SDBUI_TEST_POSTGRES_URI: postgresql://sdbui_test@127.0.0.1:5432/sdbui_test?sslmode=disable
+      SDBUI_TEST_MYSQL_URI: mysql://root@127.0.0.1:3306/sdbui_test?tls=false
+      SDBUI_REQUIRE_NETWORK_DRIVERS: "1"
+      SDBUI_TEST_EMBEDDED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +59,7 @@ jobs:
             libgcc-13-dev libncurses-dev libpython3-dev libsqlite3-dev \
             libstdc++-13-dev libxml2-dev libz3-dev pkg-config tzdata unzip \
             zlib1g-dev libgtk-4-dev librsvg2-common libgdk-pixbuf2.0-bin \
-            xvfb xauth
+            xvfb xauth python3-gi python3-pil gir1.2-atspi-2.0
       - name: Install Swift
         run: |
           curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"
@@ -47,6 +74,12 @@ jobs:
         with:
           path: .build
           key: platforms-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Package.swift') }}
+      - uses: columnar-tech/setup-dbc@v1
+        with:
+          version: v0.3.1
+          skip-drivers: 'true'
+      - name: Install pinned public database drivers
+        run: scripts/quality-drivers.sh
       - name: Configure transfer runtime
         run: python3 scripts/setup-transfers.py --directory .build/transfer-python
       - name: Tests
@@ -55,6 +88,14 @@ jobs:
           bash scripts/test-cadbc.sh
           .build/transfer-python/bin/python3 scripts/test-transfers.py
           GSK_RENDERER=cairo xvfb-run -a bash scripts/test-result-values.sh
+      - name: Headless application UI in light and dark mode
+        run: scripts/test-quality-ui.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-checks-linux-${{ matrix.arch }}
+          path: .build/quality-ui/
+          if-no-files-found: ignore
       - name: Build native Linux packages
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -94,6 +135,18 @@ jobs:
         with:
           path: .build
           key: platforms-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Package.swift') }}
+      - uses: columnar-tech/setup-dbc@v1
+        with:
+          version: v0.3.1
+          skip-drivers: 'true'
+      - name: Install embedded drivers
+        run: |
+          export ADBC_DRIVER_PATH="$PWD/.build/quality-drivers/config/adbc/drivers"
+          mkdir -p "$ADBC_DRIVER_PATH"
+          dbc install 'sqlite=1.13.0'
+          dbc install 'duckdb=2.0.0'
+          echo "ADBC_DRIVER_PATH=$ADBC_DRIVER_PATH" >> "$GITHUB_ENV"
+          echo 'SDBUI_TEST_EMBEDDED=1' >> "$GITHUB_ENV"
       - name: Test AppKit grid and application
         run: swift test
       - name: Build native application bundle

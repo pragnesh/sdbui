@@ -62,6 +62,7 @@ private final class MacWorkspaceBindings: NSObject {
         else if modified && event.keyCode == 48 { command = flags.contains(.shift) ? 4 : 3 }
         else if modified {
             switch key {
+            case ",": command = 13
             case "t": command = 1
             case "w": command = 2
             case "p", "f": command = 5

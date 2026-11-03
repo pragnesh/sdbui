@@ -44,7 +44,7 @@ final class SessionStoreTests: XCTestCase {
 @MainActor
 final class SessionRestorationTests: XCTestCase {
     private func workspace(store: SessionStore? = nil) -> ConnectionWorkspace {
-        ConnectionWorkspace(sessionStore: store) { BrowserModel(queryLibrary: QueryLibraryStore(url: nil)) }
+        ConnectionWorkspace(sessionStore: store, preferencesStore: PreferencesStore(url: nil)) { BrowserModel(queryLibrary: QueryLibraryStore(url: nil)) }
     }
     private func waitUntil(_ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)

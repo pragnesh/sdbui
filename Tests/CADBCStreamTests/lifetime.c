@@ -11,7 +11,7 @@ static struct AdbcErrorDetail detail_get(const struct AdbcError* error, int inde
   (void)error; assert(index == 0); return position_detail;
 }
 
-static int alive, stream_releases, statement_releases, fail_stage, read_error, option_calls;
+static int alive, stream_releases, statement_releases, fail_stage, read_error, option_calls, no_stream;
 static int schema(struct ArrowArrayStream* stream, struct ArrowSchema* out) {
   assert(alive && stream->private_data == &alive);
   memset(out, 0, sizeof(*out));
@@ -60,7 +60,8 @@ static AdbcStatusCode set_option(struct AdbcStatement* statement, const char* ke
 static AdbcStatusCode execute(struct AdbcStatement* statement,
                               struct ArrowArrayStream* out, int64_t* rows,
                               struct AdbcError* error) {
-  (void)statement; (void)rows; (void)error;
+  (void)statement; (void)error;
+  if (rows) *rows = 1;
   if (out) {
     *out = (struct ArrowArrayStream){schema, next, last_error, release_stream, &alive};
   }
@@ -70,7 +71,7 @@ static AdbcStatusCode release_statement(struct AdbcStatement* statement,
                                         struct AdbcError* error) {
   (void)statement; (void)error;
   assert(alive);
-  if (fail_stage != 2 && fail_stage != 4) assert(stream_releases == 1);
+  if (!no_stream && fail_stage != 2 && fail_stage != 4) assert(stream_releases == 1);
   alive = 0;
   statement_releases++;
   return ADBC_STATUS_OK;
@@ -168,6 +169,17 @@ int main(void) {
       cadbc_stream_release(&stream);
       assert(!alive && stream_releases == 1 && statement_releases == 1);
     }
+  }
+  no_stream = 1;
+  for (int scenario = 0; scenario < 4; scenario++) {
+    alive = stream_releases = statement_releases = 0;
+    fail_stage = scenario;
+    char *error = NULL; int64_t affected = -1;
+    AdbcStatusCode status = cadbc_execute(&session, "UPDATE rows SET value=1", NULL, &affected, NULL, &error);
+    assert((status == ADBC_STATUS_OK) == (scenario == 0));
+    if (!scenario) assert(affected == 1);
+    assert(!alive && stream_releases == 0 && statement_releases == (scenario == 1 ? 0 : 1));
+    free(error);
   }
   puts("Statement/stream lifetime regression tests passed");
 }

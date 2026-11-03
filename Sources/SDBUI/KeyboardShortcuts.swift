@@ -4,7 +4,7 @@ import SwiftCrossUI
 /// Shared command routing; native key handling never touches background sessions.
 enum WorkspaceShortcut: Int32 {
     case newTab = 1, closeTab, nextTab, previousTab, tableFilter, editor, cancel, refresh
-    case previousPage, nextPage, largerFont, smallerFont
+    case previousPage, nextPage, largerFont, smallerFont, preferences
 }
 
 extension ConnectionWorkspace {
@@ -18,6 +18,7 @@ extension ConnectionWorkspace {
         guard let command = WorkspaceShortcut(rawValue: code) else { return false }
         let model = selectedTab.model
         switch command {
+        case .preferences: showPreferences()
         case .newTab: addTab()
         case .closeTab: close(selectedID)
         case .nextTab, .previousTab:
@@ -29,7 +30,8 @@ extension ConnectionWorkspace {
             guard model.connection != nil else { return false }
             model.selectTab(.query)
         case .cancel:
-            if pendingCloseID != nil { cancelClose() }
+            if preferencesVisible { preferencesVisible = false }
+            else if pendingCloseID != nil { cancelClose() }
             else if model.pendingQueryCloseID != nil { model.cancelQueryDocumentClose() }
             else if model.pendingDisconnect { model.cancelDisconnect() }
             else if model.pendingQuery != nil { model.cancelPendingQuery() }

@@ -442,6 +442,7 @@ int32_t sdbui_shortcut_command(uint32_t keyval, uint32_t modifiers) {
     if (mods & GDK_SHIFT_MASK) return 0;
     if (key >= GDK_KEY_1 && key <= GDK_KEY_9) return 101 + (int32_t)(key - GDK_KEY_1);
     switch (key) {
+    case GDK_KEY_comma: return 13;
     case GDK_KEY_t: return 1;
     case GDK_KEY_w: return 2;
     case GDK_KEY_p: case GDK_KEY_f: return 5;

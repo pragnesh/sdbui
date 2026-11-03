@@ -24,6 +24,7 @@ final class QueryDocument {
     var log: [String] = []
     var browsing = false
     var browseSQL = ""
+    var browsePageSize = 1000
     var offset = 0
     var hasMore = false
     var expression: SQLDialect.FilterExpression?

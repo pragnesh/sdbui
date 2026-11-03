@@ -21,7 +21,7 @@ struct TransferView: View {
                 }
                 HStack {
                     Text("Whole-table export")
-                    Picker(of: TableExportFormat.allCases, selection: Binding(get: { Optional(model.transferFormat) }, set: { if let value = $0 { model.transferFormat = value } })).frame(width: 150)
+                    Picker(of: model.supportedExportFormats, selection: Binding(get: { Optional(model.transferFormat) }, set: { if let value = $0 { model.transferFormat = value } })).frame(width: 150)
                     Toggle("Apply current filters", isOn: model.binding(\.transferFiltered)).disabled(!model.isBrowsing)
                     Button("Export table…") {
                         Task {

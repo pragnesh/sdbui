@@ -35,6 +35,10 @@ extension SQLDialect {
             let scalar = scalars[index]
             let next = index + 1 < scalars.count ? scalars[index + 1] : nil
             switch scalar {
+                case "[" where self == .sqlite:
+                    hasContent = true
+                    while index < scalars.count, scalars[index] != "]" { index += 1 }
+                    index = min(index + 1, scalars.count)
                 case "'", "\"", "`":
                     hasContent = true
                     index = endOfQuoted(scalars, from: index, quote: scalar)

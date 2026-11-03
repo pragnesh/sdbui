@@ -2,11 +2,13 @@ import Foundation
 
 /// SQL flavour of the connected database: quoting, literals and the
 /// catalog queries behind the browser's Structure, Content and Table Info
-/// views. Only MySQL/MariaDB and PostgreSQL get catalog queries; other
-/// databases fall back to what ADBC itself reports.
+/// views. MySQL/MariaDB, PostgreSQL, SQLite and DuckDB have native catalog
+/// queries; other databases fall back to what ADBC itself reports.
 public enum SQLDialect: Sendable, Equatable {
     case mysql
     case postgres
+    case sqlite
+    case duckdb
     case generic
 
     /// Pick a dialect from the ADBC vendor name (`GetInfo`).
@@ -16,6 +18,10 @@ public enum SQLDialect: Sendable, Equatable {
             self = .mysql
         } else if vendor.contains("postgres") {
             self = .postgres
+        } else if vendor.contains("sqlite") {
+            self = .sqlite
+        } else if vendor.contains("duckdb") {
+            self = .duckdb
         } else {
             self = .generic
         }
@@ -23,7 +29,7 @@ public enum SQLDialect: Sendable, Equatable {
 
     /// What a top-level namespace is called ("Database" for MySQL).
     public var namespaceLabel: String {
-        self == .postgres ? "Schema" : "Database"
+        self == .postgres || self == .duckdb ? "Schema" : "Database"
     }
 
     // MARK: Quoting
@@ -32,7 +38,7 @@ public enum SQLDialect: Sendable, Equatable {
         switch self {
             case .mysql:
                 return "`" + identifier.replacingOccurrences(of: "`", with: "``") + "`"
-            case .postgres, .generic:
+            case .postgres, .sqlite, .duckdb, .generic:
                 return "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
         }
     }
@@ -48,8 +54,9 @@ public enum SQLDialect: Sendable, Equatable {
     }
 
     public func qualifiedName(of table: TableInfo) -> String {
-        (table.namespace.isEmpty ? [table.name] : [table.namespace, table.name])
-            .map(quote).joined(separator: ".")
+        var parts = table.namespace.isEmpty ? [table.name] : [table.namespace, table.name]
+        if self == .duckdb, let catalog = table.catalog, !catalog.isEmpty, table.schema != nil { parts.insert(catalog, at: 0) }
+        return parts.map(quote).joined(separator: ".")
     }
 
     // MARK: Default namespace
@@ -58,7 +65,8 @@ public enum SQLDialect: Sendable, Equatable {
     public var currentNamespaceSQL: String? {
         switch self {
             case .mysql: return "SELECT DATABASE()"
-            case .postgres: return "SELECT current_schema()"
+            case .postgres, .duckdb: return "SELECT current_schema()"
+            case .sqlite: return "SELECT 'main'"
             case .generic: return nil
         }
     }
@@ -72,6 +80,8 @@ public enum SQLDialect: Sendable, Equatable {
             case .postgres:
                 return namespace == "public"
                     ? "SET search_path TO public" : "SET search_path TO \(quote(namespace)), public"
+            case .duckdb: return "SET schema = " + literal(namespace)
+            case .sqlite: return nil // Attached databases are always qualified explicitly.
             case .generic:
                 return nil
         }
@@ -117,9 +127,9 @@ public enum SQLDialect: Sendable, Equatable {
         switch filter.op {
             case .contains:
                 // Cast so it also works on non-text columns.
-                let text = self == .postgres ? "CAST(\(column) AS TEXT)" : column
+                let text = self == .mysql ? column : "CAST(\(column) AS TEXT)"
                 let pattern = literal("%" + escapeLike(filter.value) + "%")
-                return "\(text) LIKE \(pattern)"
+                return "\(text) LIKE \(pattern)" + (self == .sqlite || self == .duckdb ? " ESCAPE '\\'" : "")
             case .equals: return "\(column) = \(value)"
             case .notEquals: return "\(column) <> \(value)"
             case .greater: return "\(column) > \(value)"
@@ -185,6 +195,7 @@ public enum SQLDialect: Sendable, Equatable {
                     WHERE table_schema = \(schema) AND table_name = \(name) \
                     ORDER BY ordinal_position
                     """
+            case .sqlite, .duckdb: return embeddedColumnsSQL(table)
             case .generic:
                 return nil
         }
@@ -211,6 +222,7 @@ public enum SQLDialect: Sendable, Equatable {
                     WHERE schemaname = \(schema) AND tablename = \(name) \
                     ORDER BY indexname
                     """
+            case .sqlite, .duckdb: return embeddedIndexesSQL(table)
             case .generic:
                 return nil
         }
@@ -246,6 +258,7 @@ public enum SQLDialect: Sendable, Equatable {
                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                     WHERE n.nspname = \(schema) AND c.relname = \(name)
                     """
+            case .sqlite, .duckdb: return embeddedInfoSQL(table)
             case .generic:
                 return nil
         }
@@ -253,7 +266,9 @@ public enum SQLDialect: Sendable, Equatable {
 
     /// The statement that creates the table (MySQL only).
     public func createTableSQL(_ table: TableInfo) -> String? {
-        self == .mysql ? "SHOW CREATE TABLE \(qualifiedName(of: table))" : nil
+        if self == .sqlite { return sqliteDefinitionSQL(table) }
+        if self == .duckdb { return embeddedDefinitionSQL(table) }
+        return self == .mysql ? "SHOW CREATE TABLE \(qualifiedName(of: table))" : nil
     }
 }
 
@@ -265,14 +280,14 @@ extension SQLDialect {
             return "SELECT column_name, data_type, CASE WHEN is_generated <> 'NEVER' THEN 'YES' ELSE 'NO' END, is_identity FROM information_schema.columns WHERE table_schema = \(schema) AND table_name = \(name) ORDER BY ordinal_position"
         case .mysql:
             return "SELECT COLUMN_NAME, DATA_TYPE, IF(COALESCE(GENERATION_EXPRESSION,'') <> '', 'YES','NO'), IF(EXTRA LIKE '%auto_increment%', 'YES','NO') FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = \(schema) AND TABLE_NAME = \(name) ORDER BY ORDINAL_POSITION"
-        case .generic: return nil
+        case .sqlite, .duckdb, .generic: return nil
         }
     }
 
     func transferSQL(_ table: TableInfo, format: TableExportFormat, columns: [TransferColumn], expression: FilterExpression?, orderBy: (column: String, ascending: Bool)?) throws -> String {
         var projection = "*"
         if format == .sql {
-            guard self != .generic else { throw ADBCError("SQL INSERT export requires PostgreSQL or MySQL metadata.") }
+            guard supportsTableWrites else { throw ADBCError("SQL INSERT export requires PostgreSQL or MySQL metadata.") }
             let fields = columns.filter { !$0.computed }.map { column in
                 let field = "sdbui_source." + quote(column.name)
                 let cast = self == .postgres ? "CAST(\(field) AS TEXT)" : (Self.binaryTypes.contains(column.type.lowercased()) ? "HEX(\(field))" : "CAST(\(field) AS CHAR CHARACTER SET utf8mb4)")

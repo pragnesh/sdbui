@@ -71,11 +71,26 @@ public final class ADBCConnection: @unchecked Sendable {
                     throw ADBCError("Could not infer a driver from '\(uri)'; choose one explicitly")
                 }
                 driver = name
-                options = uri.isEmpty ? [] : [.init(key: "uri", value: uri)]
+                let pathDriver = name.lowercased().contains("duckdb")
+                options = uri.isEmpty ? [] : [.init(key: pathDriver ? "path" : "uri", value: uri)]
                 options += extra
         }
 
+        // DuckDB's ADBC database option is path; favorites use the common URI field.
+        if driver.lowercased().contains("duckdb") {
+            let hasPath = options.contains { $0.key == "path" }
+            options = options.compactMap { option in
+                if option.key != "uri" { return option }
+                return hasPath ? nil : .init(key: "path", value: option.value)
+            }
+        }
+
         let (library, entrypoint) = try Discovery.resolveDriver(driver)
+        if Discovery.installedDrivers().contains(where: { $0.libraryPath == library && $0.displayName.lowercased().contains("foundry") && $0.id == "mysql" }) {
+            options = try options.map { option in
+                option.key == "uri" ? .init(key: option.key, value: try MySQLTransport.foundryURI(option.value)) : option
+            }
+        }
         let session = try withCStrings(options.map(\.key)) { keys in
             try withCStrings(options.map(\.value)) { values in
                 var error: UnsafeMutablePointer<CChar>?
@@ -139,7 +154,7 @@ public final class ADBCConnection: @unchecked Sendable {
     public func applyTableMutation(_ mutation: TableMutation) throws {
         lock.lock(); defer { lock.unlock() }
         let dialect = SQLDialect(vendorName: vendorName)
-        guard dialect != .generic else { throw ADBCError("This driver does not support row editing.") }
+        guard dialect.supportsTableWrites else { throw ADBCError("This driver does not support row editing.") }
         guard !userTransaction, !transactionSettingsUnknown else {
             throw ADBCError("Finish the manual transaction before editing rows. Reconnect after changing autocommit settings or executing transaction-controlling procedures.")
         }
@@ -170,8 +185,8 @@ public final class ADBCConnection: @unchecked Sendable {
                     throw ADBCError("The row changed or was deleted since it was loaded. Refresh and review it again.")
                 }
             }
-            let result = try executeLocked(sql, maxRows: 0)
-            guard result.rowsAffected == 1 else { throw ADBCError("The change did not affect exactly one row; it was rolled back.") }
+            let affected = try executeUpdateLocked(sql)
+            guard affected == 1 else { throw ADBCError("The change did not affect exactly one row; it was rolled back.") }
             _ = try executeLocked("COMMIT", maxRows: 0)
         } catch {
             do { _ = try executeLocked("ROLLBACK", maxRows: 0) }
@@ -183,20 +198,45 @@ public final class ADBCConnection: @unchecked Sendable {
     /// Executes one approved read query in a database-enforced read-only transaction.
     /// The lock covers BEGIN, the query and ROLLBACK so other loads cannot interleave.
     public func executeReadOnly(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {
-        lock.lock()
-        defer { lock.unlock() }
-        let dialect = SQLDialect(vendorName: vendorName)
-        guard dialect != .generic else { throw ADBCError("Read-only execution is supported for PostgreSQL and MySQL only.") }
+        lock.lock(); defer { lock.unlock() }
         guard SQLSafetyAssessment(sql, dialect: dialect).allowsReadOnly else {
             throw ADBCError("Read-only favorite: only read queries are allowed.")
         }
-        _ = try executeLocked(dialect == .postgres ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY", maxRows: 0)
+        return try withReadOnlyTransaction {
+            try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
+        }
+    }
+
+    /// The caller owns the connection lock. Do not take over a user's transaction.
+    private func withReadOnlyTransaction<T>(_ body: () throws -> T) throws -> T {
+        guard dialect.supportsReadOnly, !userTransaction, !transactionSettingsUnknown,
+              cadbc_autocommit_enabled(session) == 1 else {
+            throw ADBCError("Read-only execution requires an idle connection with confirmed autocommit. Finish manual transactions or reconnect first.")
+        }
+        let previousQueryOnly = dialect == .sqlite ? try executeLocked("PRAGMA query_only", maxRows: 1).cell(0, 0) : nil
+        if dialect == .sqlite, previousQueryOnly != "0", previousQueryOnly != "1" {
+            throw ADBCError("This SQLite driver does not expose query_only mode; read-only execution is unavailable.")
+        }
+        var begun = false
         do {
-            let result = try executeLocked(sql, maxRows: maxRows, usePostgresCopy: usePostgresCopy)
-            _ = try executeLocked("ROLLBACK", maxRows: 0)
+            if dialect == .sqlite {
+                _ = try executeLocked("PRAGMA query_only = ON", maxRows: 0)
+                guard try executeLocked("PRAGMA query_only", maxRows: 1).cell(0, 0) == "1" else {
+                    throw ADBCError("Could not enable SQLite query_only mode.")
+                }
+            }
+            let begin = dialect == .mysql ? "START TRANSACTION READ ONLY" : dialect == .sqlite ? "BEGIN" : "BEGIN TRANSACTION READ ONLY"
+            _ = try executeLocked(begin, maxRows: 0); begun = true
+            let result = try body()
+            _ = try executeLocked("ROLLBACK", maxRows: 0); begun = false
+            if let previousQueryOnly { _ = try executeLocked("PRAGMA query_only = " + (previousQueryOnly == "1" ? "ON" : "OFF"), maxRows: 0) }
             return result
         } catch {
-            _ = try? executeLocked("ROLLBACK", maxRows: 0)
+            if begun { do { _ = try executeLocked("ROLLBACK", maxRows: 0) } catch { transactionSettingsUnknown = true } }
+            if let previousQueryOnly {
+                do { _ = try executeLocked("PRAGMA query_only = " + (previousQueryOnly == "1" ? "ON" : "OFF"), maxRows: 0) }
+                catch { transactionSettingsUnknown = true }
+            }
             throw error
         }
     }
@@ -228,27 +268,29 @@ public final class ADBCConnection: @unchecked Sendable {
                             orderBy: (column: String, ascending: Bool)? = nil, readOnly: Bool = false,
                             runtime: TransferRuntime, progress: TransferProgress) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        let ownsTransaction = !userTransaction && !transactionSettingsUnknown && cadbc_autocommit_enabled(session) == 1 && dialect != .generic
+        let ownsTransaction = !userTransaction && !transactionSettingsUnknown && cadbc_autocommit_enabled(session) == 1 && dialect.supportsReadOnly
         guard !readOnly || ownsTransaction else { throw ADBCError("Reconnect before exporting from a read-only favorite with a manual transaction.") }
-        if ownsTransaction { _ = try executeLocked(dialect == .postgres ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY", maxRows: 0) }
-        defer { if ownsTransaction { do { _ = try executeLocked("ROLLBACK", maxRows: 0) } catch { transactionSettingsUnknown = true } } }
-        // Acquire the schema lock before inspecting generated and identity columns.
-        _ = try executeLocked("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0", maxRows: 0)
-        let columns = try transferColumns(table)
-        let sql = try dialect.transferSQL(table, format: format, columns: columns, expression: expression, orderBy: orderBy)
-        try transferStream(sql) { stream in
-            try withUnsafeMutablePointer(to: &stream) { address in
-                let scope = try runtime.scope([
-                    "mode": "export", "stream": UInt(bitPattern: address), "path": url.path,
-                    "format": format.rawValue, "dialect": dialect == .postgres ? "postgres" : dialect == .mysql ? "mysql" : "generic",
-                    "tableSQL": dialect.qualifiedName(of: table), "identity": columns.contains { $0.identity },
-                    "sqlText": true, "sqlBinary": columns.filter { SQLDialect.binaryTypes.contains($0.type.lowercased()) }.map(\.name),
-                    "skip": format == .sql && columns.allSatisfy({ $0.computed }) ? ["sdbui_default"] : []
-                ], progress: progress)
-                withExtendedLifetime(scope) {}
+        func performExport() throws -> Int64 {
+            // Acquire the schema lock before inspecting generated and identity columns.
+            _ = try executeLocked("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0", maxRows: 0)
+            let columns = try transferColumns(table)
+            let sql = try dialect.transferSQL(table, format: format, columns: columns, expression: expression, orderBy: orderBy)
+            try transferStream(sql) { stream in
+                try withUnsafeMutablePointer(to: &stream) { address in
+                    let scope = try runtime.scope([
+                        "mode": "export", "stream": UInt(bitPattern: address), "path": url.path,
+                        "format": format.rawValue, "dialect": dialect == .postgres ? "postgres" : dialect == .mysql ? "mysql" : "generic",
+                        "tableSQL": dialect.qualifiedName(of: table), "identity": columns.contains { $0.identity },
+                        "sqlText": true, "sqlBinary": columns.filter { SQLDialect.binaryTypes.contains($0.type.lowercased()) }.map(\.name),
+                        "skip": format == .sql && columns.allSatisfy({ $0.computed }) ? ["sdbui_default"] : []
+                    ], progress: progress)
+                    withExtendedLifetime(scope) {}
+                }
             }
+            return progress.rows
         }
-        return progress.rows
+        if ownsTransaction { return try withReadOnlyTransaction { try performExport() } }
+        return try performExport()
     }
 
     public func previewCSV(_ url: URL, into table: TableInfo, options: CSVImportOptions,
@@ -272,12 +314,19 @@ public final class ADBCConnection: @unchecked Sendable {
                           preview: CSVImportPreview, mapping: [String?],
                           runtime: TransferRuntime, progress: TransferProgress) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        guard dialect != .generic, !userTransaction, !transactionSettingsUnknown, cadbc_autocommit_enabled(session) == 1 else {
+        guard dialect.supportsTableWrites, !userTransaction, !transactionSettingsUnknown, cadbc_autocommit_enabled(session) == 1 else {
             throw ADBCError("CSV import requires confirmed autocommit. Finish manual transactions or reconnect first.")
         }
         guard mapping.count == preview.headers.count, mapping.compactMap({ $0 }).count > 0,
               Set(mapping.compactMap { $0 }).count == mapping.compactMap({ $0 }).count else { throw ADBCError("Map at least one CSV column, without duplicate targets.") }
         _ = try executeLocked(dialect == .postgres ? "BEGIN" : "START TRANSACTION", maxRows: 0)
+        var stagingTable: String?
+        defer {
+            if let stagingTable {
+                do { _ = try executeUpdateLocked("DROP TEMPORARY TABLE IF EXISTS " + dialect.quote(stagingTable)) }
+                catch { transactionSettingsUnknown = true }
+            }
+        }
         do {
             guard let eligibility = dialect.editableTableSQL(table), try executeLocked(eligibility, maxRows: 1).cell(0, 0) == "YES" else {
                 throw ADBCError("CSV import requires a base table with transactional storage.")
@@ -301,13 +350,29 @@ public final class ADBCConnection: @unchecked Sendable {
                         ], progress: progress)
                     }
                 }
+                // Foundry MySQL bulk append uses positional INSERTs. Stage exactly the
+                // mapped fields, then name the destination columns so defaults and
+                // generated columns are handled by the server, in the same transaction.
+                if dialect == .mysql {
+                    let name = "sdbui_import_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                    stagingTable = name
+                    let columns = mapping.compactMap { $0 }.map(dialect.quote).joined(separator: ", ")
+                    _ = try executeUpdateLocked("CREATE TEMPORARY TABLE " + dialect.quote(name) + " AS SELECT " + columns + " FROM " + dialect.qualifiedName(of: table) + " LIMIT 0")
+                }
                 var rows: Int64 = -1
                 var error: UnsafeMutablePointer<CChar>?
-                guard cadbc_ingest_append(session, table.name, dialect == .mysql ? table.catalog : nil,
+                guard cadbc_ingest_append(session, stagingTable ?? table.name, nil,
                                           dialect == .postgres ? table.schema : nil, &input, &rows, &error) == ADBC_STATUS_OK else {
                     throw takeError(error, fallback: "ADBC bulk import failed")
                 }
                 guard rows < 0 || rows == progress.rows else { throw ADBCError("Driver row count did not match the CSV. Import rolled back.") }
+            }
+            if let name = stagingTable {
+                let columns = mapping.compactMap { $0 }.map(dialect.quote).joined(separator: ", ")
+                let affected = try executeUpdateLocked("INSERT INTO " + dialect.qualifiedName(of: table) + " (" + columns + ") SELECT " + columns + " FROM " + dialect.quote(name))
+                guard affected == progress.rows else { throw ADBCError("Inserted row count did not match the CSV. Import rolled back.") }
+                _ = try executeUpdateLocked("DROP TEMPORARY TABLE " + dialect.quote(name))
+                stagingTable = nil
             }
             guard !progress.isCancelled else { throw ADBCError("Import cancelled.") }
             _ = try executeLocked("COMMIT", maxRows: 0)
@@ -330,6 +395,18 @@ public final class ADBCConnection: @unchecked Sendable {
     public func isConnectionLoss(_ error: Error) -> Bool {
         if let tunnel, !tunnel.isRunning { return true }
         return (error as? ADBCError)?.isConnectionLoss ?? false
+    }
+
+    /// Drivers such as Foundry MySQL report affected rows through ExecuteUpdate
+    /// (the ADBC C entry point with a NULL result stream), not through ExecuteQuery.
+    private func executeUpdateLocked(_ sql: String) throws -> Int64 {
+        try tunnel?.check()
+        var affected: Int64 = -1
+        var error: UnsafeMutablePointer<CChar>?
+        guard cadbc_execute(session, sql, nil, &affected, nil, &error) == ADBC_STATUS_OK else {
+            throw takeError(error, fallback: "Row change failed")
+        }
+        return affected
     }
 
     private func executeLocked(_ sql: String, maxRows: Int, usePostgresCopy: Bool = true) throws -> QueryResult {

@@ -65,18 +65,31 @@ final class BrowserModel {
     init(
         openConnection: @escaping @Sendable (ConnectionSource) throws -> ADBCConnection = { try ADBCConnection.open($0) },
         healthCheckIntervalNanoseconds: UInt64 = 5_000_000_000,
-        queryLibrary: QueryLibraryStore = QueryLibraryStore()
+        queryLibrary: QueryLibraryStore = QueryLibraryStore(),
+        preferences: AppPreferences = AppPreferences()
     ) {
         self.openConnection = openConnection
         self.queryLibrary = queryLibrary
         self.libraryFeedback = queryLibrary.loadError ?? ""
         self.healthCheckIntervalNanoseconds = healthCheckIntervalNanoseconds
+        self.pageSize = preferences.pageSize; self.queryFontSize = Double(preferences.fontSize); self.maxRows = preferences.rowLimit
     }
 
     @ObservationIgnored private(set) var queryFontSize = 13.0 { didSet { stateChanged() } }
 
+    func applyPreferences(_ preferences: AppPreferences, refresh: Bool = true) {
+        guard preferences.isValid, !isRunning, !isConnecting else { return }
+        let resized = pageSize != preferences.pageSize
+        pageSize = preferences.pageSize; queryFontSize = Double(preferences.fontSize); maxRows = preferences.rowLimit
+        if resized {
+            contentOffset = 0; contentHasMore = false
+            if refresh, isBrowsing, let table = selectedTable { loadContent(table) }
+        }
+    }
+
     func adjustQueryFontSize(by delta: Int) {
         queryFontSize = min(28, max(9, queryFontSize + Double(delta)))
+        sessionDidChange?()
     }
 
     func flushTableFilter() {
@@ -176,7 +189,7 @@ final class BrowserModel {
 
     /// Rows per page when browsing a table (as in Sequel Ace). The grid is
     /// virtualized, so this mostly costs fetch time.
-    let pageSize = 1000
+    @ObservationIgnored private(set) var pageSize = 1000 { didSet { stateChanged() } }
     @ObservationIgnored private(set) lazy var structurePane = makePane()
     @ObservationIgnored private(set) lazy var indexPane = makePane()
     @ObservationIgnored private(set) lazy var infoPane: ResultPane = {
@@ -209,6 +222,7 @@ final class BrowserModel {
         document.status = queryStatus; document.errorLocation = queryErrorLocation; document.log = statementLog
         document.statusText = statusMessage; document.error = errorMessage
         document.browsing = isBrowsing; document.browseSQL = browseSQL
+        document.browsePageSize = pageSize
         document.offset = contentOffset; document.hasMore = contentHasMore
         document.expression = contentExpression; document.total = contentTotal
         document.filterGroups = filterGroups; document.filterJoin = filterGroupJoin
@@ -246,6 +260,7 @@ final class BrowserModel {
         filterColumn = document.filterColumn; filterOperator = document.filterOperator; filterValue = document.filterValue
         queryDocumentsRevision += 1
         scheduleCompletionMetadata()
+        if let browseTable, document.browsePageSize != pageSize { contentOffset = 0; loadContent(browseTable) }
     }
     func addQueryDocument() {
         guard !isRunning, queryDocuments.count < 1000 else { return }
@@ -602,7 +617,7 @@ final class BrowserModel {
     @ObservationIgnored private(set) var sqlRevision = 0 { didSet { stateChanged() } }
     @ObservationIgnored private(set) var isRunning = false { didSet { stateChanged() } }
     var maxRows: Int? = 10_000
-    let maxRowsOptions = [100, 1_000, 10_000, 100_000]
+    let maxRowsOptions = AppPreferences.rowLimits
 
     @ObservationIgnored private(set) var queryStatus: QueryStatus? { didSet { stateChanged() } }
     @ObservationIgnored private(set) var queryErrorLocation: QueryErrorLocation? { didSet { stateChanged() } }
@@ -1227,7 +1242,7 @@ final class BrowserModel {
         statusMessage = "Loading \(table.name)…"
         Task {
             guard revision == sessionRevision, canUseConnection else { return }
-            let outcome = await fetch(sql, readOnly: connectionSafety.readOnly)
+            let outcome = await fetch(sql, maxRows: pageSize + 1, readOnly: connectionSafety.readOnly)
             guard revision == sessionRevision, canUseConnection else { return }
             isRunning = false
             guard selectedTableID == table.id, isBrowsing else { return }
@@ -1482,7 +1497,7 @@ final class BrowserModel {
 
     func explainQuery() {
         guard canRun else { return }
-        guard dialect == .postgres || dialect == .mysql else {
+        guard dialect.supportsExplain else {
             queryStatus = QueryStatus(text: "EXPLAIN unavailable", error: "EXPLAIN is currently supported for PostgreSQL and MySQL.")
             return
         }
@@ -1495,7 +1510,7 @@ final class BrowserModel {
             queryStatus = QueryStatus(text: "Choose one query to explain", error: "Place the cursor in a read-only statement or select exactly one. EXPLAIN never adds ANALYZE.")
             return
         }
-        run(dialect.statements(in: "EXPLAIN " + statement.text), sourceSQL: sql, explaining: true)
+        run(dialect.statements(in: (dialect == .sqlite ? "EXPLAIN QUERY PLAN " : "EXPLAIN ") + statement.text), sourceSQL: sql, explaining: true)
     }
 
     /// Ctrl+Enter: runs the selected statements, or else the statement the
@@ -1523,10 +1538,10 @@ final class BrowserModel {
         queryErrorLocation = nil
         errorMessage = nil
         let assessments = statements.map { SQLSafetyAssessment($0.text, dialect: dialect) }
-        if connectionSafety.readOnly && (dialect == .generic || assessments.contains { !$0.allowsReadOnly }) {
+        if connectionSafety.readOnly && (!dialect.supportsReadOnly || assessments.contains { !$0.allowsReadOnly }) {
             pendingQuery = nil
-            let message = dialect == .generic
-                ? "Read-only execution is supported for PostgreSQL and MySQL only."
+            let message = !dialect.supportsReadOnly
+                ? "Read-only execution is supported for PostgreSQL, MySQL, SQLite and DuckDB."
                 : "Read-only favorite: this batch contains a statement that is not allowed. Nothing was executed."
             queryStatus = QueryStatus(text: "Blocked by read-only mode", error: message)
             errorMessage = message
@@ -1665,6 +1680,7 @@ final class BrowserModel {
     // MARK: Whole-table transfers
 
     @ObservationIgnored var transferVisible = false { didSet { stateChanged() } }
+    var supportedExportFormats: [TableExportFormat] { dialect.supportsTableWrites ? TableExportFormat.allCases : TableExportFormat.allCases.filter { $0 != .sql } }
     @ObservationIgnored var transferFormat = TableExportFormat.csv { didSet { stateChanged() } }
     @ObservationIgnored var transferFiltered = false { didSet { stateChanged() } }
     @ObservationIgnored var csvOptions = CSVImportOptions() { didSet { csvPreview = nil; stateChanged() } }
@@ -1677,13 +1693,14 @@ final class BrowserModel {
     @ObservationIgnored private var transferProgress: TransferProgress?
     @ObservationIgnored private(set) var transferMessage = "" { didSet { stateChanged() } }
     @ObservationIgnored private var transferPoll: Task<Void, Never>?
-    var canImportCSV: Bool { canRun && !connectionSafety.readOnly && selectedTable != nil && dialect != .generic }
+    var canImportCSV: Bool { canRun && !connectionSafety.readOnly && selectedTable != nil && dialect.supportsTableWrites }
     var canConfirmCSV: Bool {
         canImportCSV && csvPreview != nil && csvPreviewTable == selectedTableID && csvPreviewSession == sessionRevision && csvPreviewDocument == activeQueryDocument.id &&
         !csvMapping.compactMap({ $0 }).isEmpty && Set(csvMapping.compactMap { $0 }).count == csvMapping.compactMap({ $0 }).count
     }
     func toggleTransfers() {
         guard !isRunning else { return }
+        if !supportedExportFormats.contains(transferFormat) { transferFormat = .csv }
         transferVisible.toggle(); rowEditDraft = nil
     }
     private func startTransfer(_ message: String) -> TransferProgress {
