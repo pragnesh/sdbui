@@ -111,8 +111,10 @@ def main():
         subprocess.run([str(pg / "initdb"), "-D", str(root / "data"), "-A", "trust", "-U", "sdbui_test", "--no-locale"], check=True, stdout=subprocess.DEVNULL)
         subprocess.run([str(pg / "pg_ctl"), "-D", str(root / "data"), "-l", str(root / "pg.log"), "-o", f"-h 127.0.0.1 -p {pg_port} -k {directory}", "-w", "start"], check=True, stdout=subprocess.DEVNULL)
         try:
+            # Match CI: a dedicated application database, not the default postgres catalog.
+            subprocess.run([str(pg / "createdb"), "-h", "127.0.0.1", "-p", str(pg_port), "-U", "sdbui_test", "sdbui_test"], check=True)
             env = {**os.environ, "SDBUI_TEST_SSH_EXECUTABLE": str(wrapper), "SDBUI_TEST_SSH_PORT": str(ssh_port),
-                   "SDBUI_TEST_POSTGRES_URI": f"postgresql://sdbui_test@127.0.0.1:{pg_port}/postgres?sslmode=disable"}
+                   "SDBUI_TEST_POSTGRES_URI": f"postgresql://sdbui_test@127.0.0.1:{pg_port}/sdbui_test?sslmode=disable"}
             subprocess.run(["swift", "test"], env=env, check=True)
         finally:
             subprocess.run([str(pg / "pg_ctl"), "-D", str(root / "data"), "-m", "immediate", "-w", "stop"], check=True, stdout=subprocess.DEVNULL)

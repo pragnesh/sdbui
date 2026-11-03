@@ -129,7 +129,8 @@ final class SessionRestorationTests: XCTestCase {
         let model = workspace.selectedTab.model
         defer { model.disconnect() }
         model.profiles = [profile]
-        let table = SessionTableState(catalog: "postgres", schema: "restored_app", name: "restore_item")
+        let restoredTable = try XCTUnwrap(try connection.tables().first { $0.schema == "restored_app" && $0.name == "restore_item" })
+        let table = SessionTableState(catalog: restoredTable.catalog, schema: restoredTable.schema, name: restoredTable.name)
         model.restoreSession(SessionTabState(favoriteID: profile.id, sql: "DELETE FROM restored_app.restore_item", dirty: true,
             database: "restored_app", table: table, pane: BrowserTab.structure.rawValue))
         try await waitUntil { model.connection != nil && model.selectedTable?.name == "restore_item" }
