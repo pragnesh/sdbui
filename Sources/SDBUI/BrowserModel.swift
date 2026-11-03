@@ -56,6 +56,15 @@ final class BrowserModel {
     }
     var isConnecting = false
     private(set) var isConnectionLost = false
+    /// An unknown SSH host key waiting for the user to verify and trust it.
+    private(set) var hostKeyPrompt: SSHHostKeyScan?
+    /// What to repeat once the host key is trusted.
+    @ObservationIgnored private var hostKeyRetry: HostKeyRetry?
+
+    private enum HostKeyRetry {
+        case test
+        case connect(ConnectionSource, title: String, safety: FavoriteSafety, favoriteID: String?, reconnecting: Bool)
+    }
     @ObservationIgnored private var reconnectSource: ConnectionSource?
     @ObservationIgnored private var sessionRevision = 0
     @ObservationIgnored private var connectionMonitor: Task<Void, Never>?
@@ -784,7 +793,11 @@ final class BrowserModel {
                 isConnecting = false
                 switch outcome {
                 case .success(let vendor): connectionFeedback = "Connection successful (\(vendor))."
-                case .failure(let error): connectionFeedback = "Connection test failed: \(error)"
+                case .failure(let error):
+                    connectionFeedback = "Connection test failed: \(error)"
+                    if let unknown = error as? SSHUnknownHostKeyError {
+                        askToTrustHostKey(unknown, retry: .test)
+                    }
                 }
             }
         } catch {
@@ -882,8 +895,56 @@ final class BrowserModel {
                 case .failure(let error):
                     statusMessage = reconnecting ? "Reconnect failed — try again when the server is available." : "Connection failed"
                     errorMessage = "\(error)"
+                    if let unknown = error as? SSHUnknownHostKeyError {
+                        askToTrustHostKey(unknown, retry: .connect(
+                            source, title: title, safety: safety, favoriteID: favoriteID, reconnecting: reconnecting))
+                    }
             }
         }
+    }
+
+    // MARK: SSH host keys
+
+    /// Fetches the unknown host key so the user can compare its fingerprint
+    /// with the server's before trusting it.
+    private func askToTrustHostKey(_ error: SSHUnknownHostKeyError, retry: HostKeyRetry) {
+        let host = error.host, port = error.port
+        Task {
+            let outcome = await Task.detached { Result { try SSHHostKeys.scan(host: host, port: port) } }.value
+            switch outcome {
+                case .success(let scan):
+                    hostKeyRetry = retry
+                    hostKeyPrompt = scan
+                case .failure(let scanError):
+                    errorMessage = "\(error)\nThe host key could not be fetched for verification: \(scanError)"
+            }
+        }
+    }
+
+    /// Saves the verified key to known_hosts and retries.
+    func trustHostKey() {
+        guard let scan = hostKeyPrompt else { return }
+        do {
+            try SSHHostKeys.trust(scan)
+        } catch {
+            errorMessage = "Could not save the host key: \(error)"
+            return
+        }
+        let retry = hostKeyRetry
+        hostKeyPrompt = nil
+        hostKeyRetry = nil
+        errorMessage = nil
+        switch retry {
+            case .test: testFavorite()
+            case .connect(let source, let title, let safety, let favoriteID, let reconnecting):
+                connect(source, title: title, safety: safety, favoriteID: favoriteID, reconnecting: reconnecting)
+            case nil: break
+        }
+    }
+
+    func dismissHostKeyPrompt() {
+        hostKeyPrompt = nil
+        hostKeyRetry = nil
     }
 
     func reconnect() {

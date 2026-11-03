@@ -5,6 +5,7 @@
 #else
     import DefaultBackend
 #endif
+import ADBCKit
 import Foundation
 import SwiftCrossUI
 
@@ -36,11 +37,47 @@ struct RootView: View {
     var model: BrowserModel
 
     var body: some View {
-        if model.connection == nil {
-            DisconnectedView(model: model)
-        } else {
-            MainWindow(model: model)
+        VStack(spacing: 0) {
+            if let scan = model.hostKeyPrompt {
+                HStack {
+                    HostKeyPrompt(model: model, scan: scan)
+                    Spacer()
+                }
+                Divider()
+            }
+            if model.connection == nil {
+                DisconnectedView(model: model)
+            } else {
+                MainWindow(model: model)
+            }
         }
+    }
+}
+
+/// Asks whether to trust an SSH server's unknown host key, like OpenSSH's
+/// "authenticity of host can't be established" question.
+struct HostKeyPrompt: View {
+    var model: BrowserModel
+    var scan: SSHHostKeyScan
+
+    var body: some View {
+        let port = scan.port == 22 ? "" : " port \(scan.port)"
+        let address = scan.hostName == scan.host ? "" : " (\(scan.hostName))"
+        VStack(alignment: .leading, spacing: 8) {
+            Text("The authenticity of SSH host \(scan.host)\(address)\(port) can't be established.")
+                .font(.headline)
+            Text("Its host key isn't in \(scan.knownHostsFile) yet. Compare the fingerprint with the one the server's administrator gives you; trust it only if they match.")
+            Text(scan.fingerprints.joined(separator: "\n"))
+                .font(.system(size: 12, design: .monospaced))
+                .textSelectionEnabled()
+            HStack {
+                Button("Trust and connect") { model.trustHostKey() }
+                    .fixedSize()
+                Button("Cancel") { model.dismissHostKeyPrompt() }
+                    .fixedSize()
+            }
+        }
+        .padding(8)
     }
 }
 

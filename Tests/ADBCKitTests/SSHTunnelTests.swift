@@ -114,6 +114,20 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertThrowsError(try ADBCConnection.open(invalid, sshExecutableURL: URL(fileURLWithPath: executable)))
     }
 
+    func testErrorDetailSplitsOpenSSHLineEndings() {
+        let log = "OpenSSH_9.6p1 Ubuntu, OpenSSL 3.0.13\r\ndebug1: Reading configuration data\r\n"
+            + "No ED25519 host key is known for db.example and you have requested strict checking.\r\n"
+            + "Host key verification failed.\r\n"
+        let detail = SSHTunnel.errorDetail(log)
+        XCTAssertTrue(detail.hasPrefix("No ED25519 host key is known for db.example"))
+        XCTAssertTrue(detail.contains("Host key verification failed."))
+        XCTAssertTrue(detail.contains("Verify and trust the host key when asked"))
+        XCTAssertFalse(detail.contains("debug1"))
+        XCTAssertFalse(detail.contains("OpenSSH_"))
+        XCTAssertEqual(SSHTunnel.errorDetail("debug1: x\r\nPermission denied (publickey).\r\n"),
+                       "Permission denied (publickey).")
+    }
+
     func testSSHStartupFailureReturnsAnError() throws {
         var settings = SSHSettings()
         settings.host = "unused"
@@ -121,6 +135,59 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertThrowsError(try SSHTunnel.start(settings: settings, destination: destination,
             executableURL: URL(fileURLWithPath: "/usr/bin/false"))) { error in
             XCTAssertTrue(String(describing: error).contains("SSH tunnel failed"))
+        }
+    }
+
+    /// Against the local sshd (skipped when none listens on port 22), with
+    /// wrapper tools that use an empty, temporary known_hosts.
+    func testUnknownHostKeyCanBeScannedAndTrusted() throws {
+        let probe = try SSHHostKeys.run("/bin/sh", ["-c", "(ss -ltn 2>/dev/null || true) | grep -c '127.0.0.1:22 \\|0.0.0.0:22 ' || true"])
+        guard (Int(probe.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0 else {
+            throw XCTSkip("No local sshd on port 22.")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdbui-hostkey-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        let config = root.appendingPathComponent("ssh_config")
+        try "Host *\n  UserKnownHostsFile \"\(knownHosts.path)\"\n  GlobalKnownHostsFile /dev/null\n  HashKnownHosts no\n"
+            .write(to: config, atomically: true, encoding: .utf8)
+        let tools = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexec /usr/bin/ssh -F '\(config.path)' \"$@\"\n"
+            .write(to: tools.appendingPathComponent("ssh"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tools.appendingPathComponent("ssh").path)
+        for tool in ["ssh-keyscan", "ssh-keygen"] {
+            try FileManager.default.createSymbolicLink(atPath: tools.appendingPathComponent(tool).path, withDestinationPath: "/usr/bin/\(tool)")
+        }
+
+        var settings = SSHSettings()
+        settings.host = "127.0.0.1"
+        settings.user = "sdbui-nonexistent-user"
+        let destination = try TunnelDestination(uri: "postgresql://127.0.0.1:5432/db", driver: "postgresql")
+        XCTAssertThrowsError(try SSHTunnel.start(settings: settings, destination: destination,
+                                                 executableURL: tools.appendingPathComponent("ssh"))) { error in
+            let unknown = error as? SSHUnknownHostKeyError
+            XCTAssertEqual(unknown?.host, "127.0.0.1")
+            XCTAssertTrue(String(describing: error).contains("Host key verification failed"))
+        }
+
+        let scan = try SSHHostKeys.scan(host: "127.0.0.1", port: "22", toolsDirectory: tools)
+        XCTAssertEqual(scan.knownHostsFile, knownHosts.path)
+        XCTAssertEqual(scan.port, 22)
+        XCTAssertFalse(scan.fingerprints.isEmpty)
+        XCTAssertTrue(scan.fingerprints.allSatisfy { $0.contains(" SHA256:") })
+        try SSHHostKeys.trust(scan)
+        try SSHHostKeys.trust(scan)  // Appending again keeps the file well-formed.
+        let saved = try String(contentsOf: knownHosts, encoding: .utf8)
+        XCTAssertTrue(saved.hasPrefix("127.0.0.1 "))
+        XCTAssertFalse(saved.contains("\n\n"))
+
+        // Now the host key is accepted; only authentication can fail.
+        XCTAssertThrowsError(try SSHTunnel.start(settings: settings, destination: destination,
+                                                 executableURL: tools.appendingPathComponent("ssh"))) { error in
+            XCTAssertNil(error as? SSHUnknownHostKeyError)
+            XCTAssertFalse(String(describing: error).contains("Host key verification failed"))
         }
     }
 

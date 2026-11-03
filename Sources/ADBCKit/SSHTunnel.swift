@@ -137,6 +137,9 @@ final class SSHTunnel: @unchecked Sendable {
             tunnel.stop()
             if message.contains("Address already in use"), attempt < 2 { continue }
             let detail = errorDetail(message)
+            if !timedOut, let unknown = SSHUnknownHostKeyError(settings: settings, diagnostics: message, detail: detail) {
+                throw unknown
+            }
             throw ADBCError(timedOut
                 ? "SSH tunnel timed out. Check the host, SSH agent and identity file."
                 : "SSH tunnel failed. \(detail.isEmpty ? "OpenSSH exited before forwarding was ready." : detail)")
@@ -144,11 +147,17 @@ final class SSHTunnel: @unchecked Sendable {
         throw ADBCError("Could not allocate a local SSH tunnel port.")
     }
 
-    private static func errorDetail(_ diagnostics: String) -> String {
-        let lines = diagnostics.split(separator: "\n").filter {
+    /// OpenSSH's own messages, without debug output. Its lines end in "\r\n",
+    /// which Swift treats as one character, so split on any newline.
+    static func errorDetail(_ diagnostics: String) -> String {
+        let lines = diagnostics.split(whereSeparator: \.isNewline).filter {
             !$0.hasPrefix("debug") && !$0.hasPrefix("OpenSSH_")
         }
-        return String(lines.suffix(8).joined(separator: "\n").suffix(2000))
+        var detail = String(lines.suffix(8).joined(separator: "\n").suffix(2000))
+        if detail.contains("Host key verification failed") {
+            detail += "\nVerify and trust the host key when asked, or connect to the SSH host once in a terminal to save it."
+        }
+        return detail
     }
 
     func check() throws {
@@ -226,10 +235,12 @@ final class ChildProcess: @unchecked Sendable {
     let pid: pid_t
     private let lock = NSLock()
     private var exited = false
+    private var status: Int32 = 0
 
-    /// Starts `executable` with stdin and stdout on /dev/null and stderr
-    /// appended to `stderrPath`. No other descriptors are inherited.
-    init(executable: String, arguments: [String], stderrPath: String) throws {
+    /// Starts `executable` with stdin on /dev/null, stdout on /dev/null or
+    /// appended to `stdoutPath`, and stderr appended to `stderrPath`. No other
+    /// descriptors are inherited.
+    init(executable: String, arguments: [String], stdoutPath: String? = nil, stderrPath: String) throws {
         #if os(Linux)
         var actions = posix_spawn_file_actions_t()
         var attributes = posix_spawnattr_t()
@@ -240,7 +251,7 @@ final class ChildProcess: @unchecked Sendable {
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 1, stdoutPath ?? "/dev/null", O_WRONLY | (stdoutPath == nil ? 0 : O_APPEND), 0)
         posix_spawn_file_actions_addopen(&actions, 2, stderrPath, O_WRONLY | O_APPEND, 0)
         #if os(Linux)
         posix_spawn_file_actions_addclosefrom_np(&actions, 3)
@@ -297,11 +308,20 @@ final class ChildProcess: @unchecked Sendable {
         if !reapLocked(blocking: false) { _ = kill(pid, signal) }
     }
 
+    /// Whether the process exited normally with status 0.
+    var exitedSuccessfully: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        // WIFEXITED and WEXITSTATUS: no signal, and exit code 0.
+        return reapLocked(blocking: false) && status & 0x7f == 0 && (status >> 8) & 0xff == 0
+    }
+
     /// Whether the process has exited (and been reaped).
     private func reapLocked(blocking: Bool) -> Bool {
         guard !exited else { return true }
         var status: Int32 = 0
         let result = waitpid(pid, &status, blocking ? 0 : WNOHANG)
+        if result == pid { self.status = status }
         if result == pid || (result == -1 && errno == ECHILD) { exited = true }
         return exited
     }

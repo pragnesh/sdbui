@@ -417,8 +417,11 @@ The app chooses a loopback-only local port automatically and saves SSH settings
 in `[SDBUI.SSH]`, separate from ADBC driver options.
 
 OpenSSH must be installed. Authentication uses your SSH agent, default keys or
-the selected identity file; unlock encrypted keys in your agent first. Connect
-to the SSH host once in a terminal to verify its host key before using the app.
+the selected identity file; unlock encrypted keys in your agent first. If the
+SSH host's key is not yet in `known_hosts`, the app fetches it (`ssh-keyscan`),
+shows its fingerprints and saves it only when you choose **Trust and connect**;
+compare them with the fingerprints from the server's administrator. A changed
+host key is never accepted: fix `known_hosts` yourself after checking why.
 SSH password/passphrase dialogs are not supported. PostgreSQL and MySQL network
 URIs are supported; PostgreSQL retains the original hostname for SSL verification.
 MySQL sees the loopback endpoint, so SSL hostname verification may need a
