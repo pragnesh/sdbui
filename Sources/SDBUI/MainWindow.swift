@@ -406,26 +406,16 @@ struct FilterBar: View {
             "filter",
             of: {
                 [
-                    AnyHashable(model.isBrowsing), model.contentColumns, model.filterColumn,
+                    AnyHashable(model.isBrowsing), model.filterEditorVisible, model.contentColumns, model.filterColumn,
                     model.filterOperator?.rawValue, model.contentFilter == nil, model.filterValue, model.canRun,
                 ]
             }
         ) {
             revision &+= 1
         }
-        let columns = model.contentColumns
-        if model.isBrowsing {
+        if model.isBrowsing && model.filterEditorVisible {
             HStack(spacing: 8) {
-                Text("Filter")
-                    .fixedSize()
-                Picker(
-                    of: columns,
-                    selection: Binding(
-                        get: { model.filterColumn ?? columns.first },
-                        set: { model.filterColumn = $0 }
-                    )
-                )
-                .fixedSize()
+                Text("Filter: \(model.filterColumn ?? "")").fixedSize()
                 Picker(of: SQLDialect.Filter.Operator.allCases, selection: model.binding(\.filterOperator))
                     .fixedSize()
                 TextField(
@@ -435,8 +425,9 @@ struct FilterBar: View {
                 .disabled(model.filterOperator?.needsValue == false)
                 .onSubmit { model.applyContentFilter() }
                 Button("Filter") { model.applyContentFilter() }
-                    .disabled(columns.isEmpty)
+                    .disabled(model.filterColumn == nil)
                     .fixedSize()
+                Button("Cancel") { model.filterEditorVisible = false }
                 Button("Clear") { model.clearContentFilter() }
                     .disabled(model.contentFilter == nil)
                     .fixedSize()

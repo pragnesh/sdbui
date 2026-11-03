@@ -530,9 +530,8 @@ static void free_grid_font(gpointer data) {
     g_object_unref(font->display); g_object_unref(font->provider);
     g_free(font->name); g_free(font);
 }
-void sdbui_grid_font_size(void *grid, int size) {
+static void widget_font_size(GtkWidget *view, int size) {
     static guint next_id;
-    GtkWidget *view = find_column_view(GTK_WIDGET(grid));
     if (!view || size < 9 || size > 28) return;
     GridFont *font = g_object_get_data(G_OBJECT(view), "sdbui-grid-font");
     if (font && font->size == size) return;
@@ -554,6 +553,13 @@ void sdbui_grid_font_size(void *grid, int size) {
     g_free(css);
     font->size = size;
 }
+void sdbui_grid_font_size(void *grid, int size) {
+    widget_font_size(find_column_view(GTK_WIDGET(grid)), size);
+}
+void sdbui_table_list_font_size(void *root, int size) {
+    widget_font_size(GTK_WIDGET(root), size);
+}
+
 
 typedef struct { void *context; SDBUILayoutChange changed; SDBUIValueDestroy destroy; int width, height; } SessionLayout;
 static void free_session_layout(gpointer data) {
@@ -697,6 +703,9 @@ void sdbui_table_list_update(void *root, const char *const *labels, int replace,
 
 /* Header actions use snapshots just like cell filters, so an open menu cannot
  * act on a newly loaded result or a different column projection. */
+void sdbui_grid_header_filter_enabled(void *grid, int enabled) {
+    g_object_set_data(G_OBJECT(grid), "sdbui-header-filter", GINT_TO_POINTER(enabled));
+}
 typedef struct { void *snapshot; SDBUIHeaderApply apply; SDBUIValueDestroy destroy; GtkWidget *grid; GtkWidget *popover; } HeaderAction;
 static void header_action_free(gpointer data) {
     HeaderAction *action = data;
@@ -757,8 +766,9 @@ static void header_pressed(GtkGestureClick *gesture, gint presses, gdouble x, gd
     g_object_unref(action);
     GMenu *menu = g_menu_new();
     const char *names[] = { "Sort ascending", "Sort descending", "Copy column name", "Copy column values (loaded rows)",
-        "Hide column", "Auto-fit width (loaded rows)", "Freeze through this column", "Unfreeze columns", "Show all columns" };
+        "Hide column", "Auto-fit width (loaded rows)", "Freeze through this column", "Unfreeze columns", "Show all columns", "Filter column…" };
     for (guint index = 0; index < G_N_ELEMENTS(names); index++) {
+        if (index == 9 && !g_object_get_data(G_OBJECT(grid), "sdbui-header-filter")) continue;
         GMenuItem *item = g_menu_item_new(names[index], NULL);
         g_menu_item_set_action_and_target(item, "header.apply", "i", (gint)index);
         g_menu_append_item(menu, item); g_object_unref(item);

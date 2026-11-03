@@ -164,7 +164,7 @@ The connected window is laid out like [Sequel Ace](https://sequel-ace.com):
 - **Query:** SQL editor with results below. Clicking a table only selects
   it; **Show rows** runs ``SELECT * FROM `db`.`table` LIMIT 1000`` and shows
   that SQL above the rows, never in the editor, with a column / operator /
-  value filter bar and Previous/Next paging; filtering, paging and header
+  value filters from column headers and Previous/Next paging; filtering, paging and header
   sorting rewrite and re-run that SQL (`WHERE`, `OFFSET`, `ORDER BY`).
   Ctrl+Enter runs the selection or the statement at the cursor,
   Run All runs every statement; Cancel (`AdbcConnectionCancel`), row limit,
@@ -211,7 +211,7 @@ Numbers are right-aligned and headers show each column's type. Click a header
 to sort; select rows with Shift/Ctrl-click and press Ctrl+C, or right-click a
 cell to copy it, the rows, CSV or SQL `INSERT` statements.
 
-For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column/operator/value filter bar. It replaces the current filter, including grouped conditions, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
+For **Show rows** results, right-click a cell and choose **Filter by this value** → **=**, **!=**, or **IS NULL**. This uses that cell's full value, even with several rows selected, and updates the column filter. It replaces the current filter, keeps sorting, and returns to the first page without changing editor SQL or the clipboard. On a NULL cell, `=` means `IS NULL` and `!=` means `IS NOT NULL`; an empty string and the text `NULL` remain ordinary values. The submenu is limited to browsed table rows, where the source table and column are known, and ignores stale actions after switching tables or replacing results.
 
 The SQL editor highlights keywords, strings, quoted identifiers, numbers and
 comments in light and dark themes. Highlighting preserves the SQL text,
@@ -226,7 +226,7 @@ metadata for referenced tables in the background. Completion is a lightweight
 SQL aid; it does not infer columns of CTEs or derived subqueries.
 
 **+ Query** opens another SQL draft inside the current connection. Each query tab
-keeps its own editor text, cursor, results, filters, status and statement log.
+keeps its own editor text, cursor, results, filters and status.
 An asterisk marks unsaved SQL, and closing an edited query requires confirmation.
 All query drafts and the selected query tab are restored on launch; results are
 kept only in memory and restored SQL is never automatically executed. Query tabs
@@ -239,11 +239,10 @@ PostgreSQL and MySQL and never adds `ANALYZE`; explaining SQL does not mark the
 draft as successfully executed. PostgreSQL plan queries use the driver's
 non-COPY result path. Manually running an `EXPLAIN` statement also uses that path.
 
-**Advanced filters** combines conditions into groups. Choose **AND** or **OR**
-within each group and between groups, then **Apply groups**. For example,
-`(status = 'open' AND priority > 2) OR owner IS NULL`. Filters stay attached to
-their query tab and apply to server-side sorting, paging and **Count exact**.
-The simple Filter button and cell-value menu replace the current filter.
+Right-click a browsed column header and choose **Filter column…** to set its
+operator and value. Apply (or Enter) filters that column; Clear removes the
+current filter. The editor appears only when requested from a header. Filters
+stay with their query tab and apply to sorting, paging and exact counts.
 
 **Count exact** counts all rows matching the applied filter, not just the loaded
 page. Exact counts are marked explicitly, cached with the query tab, and
@@ -287,10 +286,10 @@ it includes the database's row estimate, explicitly marked with `~` and
 `(estimate)`. Estimates can be stale and are omitted for filtered results;
 page navigation uses the actual fetched rows. No full-table count is required.
 
-**Run All** includes a collapsible statement log with success/failure, row counts,
-duration and truncation warnings for completed statements. Execution stops at
-the first error, labels unexecuted statements, and retains the last successful
-result. Completed statements are not automatically rolled back.
+**Run All** shows progress and the final result summary in the status line.
+On failure or cancellation it identifies the statement, completed count and
+remaining statements not executed, retaining the last successful result.
+Completed statements are not automatically rolled back.
 
 History records duration, returned/affected rows and success or failure, with a
 **This connection only** filter. Double-click an entry (or press Enter on it)

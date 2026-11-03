@@ -72,7 +72,7 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         model.browseSelectedTable()
         try await waitUntil { !model.isRunning && model.selectedTableID.flatMap { model.editMetadata[$0] } != nil }
     }
-    func testGroupedFiltersCountsAndPinnedFuzzySidebar() async throws {
+    func testColumnFiltersCountsAndPinnedFuzzySidebar() async throws {
         let model = try await model()
         defer { model.disconnect() }
         let connection = try XCTUnwrap(model.connection)
@@ -82,12 +82,15 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         defer { _ = try? connection.execute("DROP TABLE public.aaa_unpinned_pin_test", maxRows: 0) }
         _ = try connection.execute("INSERT INTO public.browse_groups VALUES (1,'alpha',1),(2,'alpha',20),(3,'beta',30),(4,NULL,40)", maxRows: 0)
         try await browse(model, table: "browse_groups")
-        model.filterGroups = [
-            .init(conditions: [.init(filter: .init(column: "name", op: .equals, value: "alpha")), .init(filter: .init(column: "qty", op: .greater, value: "10"))]),
-            .init(conditions: [.init(filter: .init(column: "name", op: .isNull, value: ""))])]
-        model.filterGroupJoin = .any
         let sql = model.sql
-        model.applyAdvancedFilters()
+        let column = try XCTUnwrap(model.queryPane.result?.columns.firstIndex { $0.name == "name" })
+        _ = model.queryPane.headerCommand(9, column: column)
+        XCTAssertTrue(model.filterEditorVisible)
+        XCTAssertEqual(model.filterColumn, "name")
+        model.filterOperator = .equals
+        model.filterValue = "alpha"
+        model.applyContentFilter()
+        XCTAssertFalse(model.filterEditorVisible)
         try await waitUntil { !model.isRunning }
         XCTAssertEqual(model.queryPane.result?.rowCount, 2)
         model.countContentRows()
@@ -97,7 +100,7 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         XCTAssertEqual(model.sql, sql)
         model.addQueryDocument()
         model.selectQueryDocument(model.queryDocuments[0].id)
-        XCTAssertNotNil(model.contentExpression)
+        XCTAssertNotNil(model.contentFilter)
         XCTAssertEqual(model.contentTotal, 2)
         model.toggleSelectedTablePin()
         XCTAssertTrue(model.pinnedTableIDs.contains(model.selectedTableID!))
@@ -108,7 +111,7 @@ final class BrowseEditingIntegrationTests: XCTestCase {
         XCTAssertFalse(model.pinnedTableIDs.contains(model.selectedTableID!))
         model.clearContentFilter()
         try await waitUntil { !model.isRunning }
-        XCTAssertNil(model.contentExpression)
+        XCTAssertNil(model.contentFilter)
         XCTAssertNil(model.contentTotal)
         XCTAssertEqual(model.queryPane.result?.rowCount, 4)
     }

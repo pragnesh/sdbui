@@ -139,16 +139,16 @@ final class UsabilityIntegrationTests: XCTestCase {
         try await waitUntil { !model.isRunning }
         XCTAssertFalse(model.contentRowsLabel.contains("estimate"))
     }
-    func testStatementLogHistoryAndDisconnectConfirmation() async throws {
+    func testStatementStatusHistoryAndDisconnectConfirmation() async throws {
         let model = try await connected()
         defer { model.disconnect() }
         model.setSQL("SELECT 1; SELEC invalid; SELECT 3")
         model.runQuery()
         try await waitUntil { !model.isRunning }
-        XCTAssertEqual(model.statementLog.count, 3)
-        XCTAssertTrue(model.statementLog[0].hasPrefix("✓ Statement 1/3"))
-        XCTAssertTrue(model.statementLog[1].hasPrefix("✗ Statement 2/3"))
-        XCTAssertTrue(model.statementLog[2].contains("not executed"))
+        XCTAssertTrue(model.queryStatus?.text.contains("statement 2/3") == true)
+        XCTAssertTrue(model.queryStatus?.text.contains("1 completed") == true)
+        XCTAssertTrue(model.queryStatus?.text.contains("1 not executed") == true)
+        XCTAssertTrue(model.queryStatus?.error?.contains("Statement 2 of 3 failed") == true)
         XCTAssertEqual(model.queryPane.result?.cell(0, 0), "1")
         XCTAssertEqual(model.queryLibrary.history.map(\.succeeded), [false, true])
         XCTAssertTrue(model.queryLibrary.history.allSatisfy { $0.duration != nil })

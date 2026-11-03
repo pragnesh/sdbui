@@ -25,10 +25,8 @@ struct QueryTab: View {
             }
             QuerySafetyConfirmation(model: model)
             QueryStatusLine(model: model)
-            StatementLogView(model: model)
             BrowseBar(model: model)
             FilterBar(model: model)
-            AdvancedFilterView(model: model)
             RowEditingBar(model: model)
             if model.transferVisible {
                 TransferView(model: model).frame(maxHeight: .infinity)

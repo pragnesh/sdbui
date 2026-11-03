@@ -21,16 +21,12 @@ final class QueryDocument {
     var statusText = "Ready"
     var error: String?
     var errorLocation: QueryErrorLocation?
-    var log: [String] = []
     var browsing = false
     var browseSQL = ""
     var browsePageSize = 1000
     var offset = 0
     var hasMore = false
-    var expression: SQLDialect.FilterExpression?
     var total: Int64?
-    var filterGroups: [FilterGroupDraft] = []
-    var filterJoin: FilterJoin = .any
     var filter: SQLDialect.Filter?
     var sort: DataGridSort?
     var columns: [String] = []

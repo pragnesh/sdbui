@@ -67,6 +67,7 @@ struct VirtualTableList: View {
         source.rows = rows
         let selected = selection.flatMap { id in rows.firstIndex { $0.id == id } }.map(UInt32.init) ?? UInt32.max
         let pointer = UnsafeMutableRawPointer(native.widgetPointer)
+        sdbui_table_list_font_size(pointer, Int32(environment.resolvedFont.pointSize.rounded()))
         if replace {
             let labels = rows.map { strdup($0.label) }
             defer { labels.forEach { free($0) } }

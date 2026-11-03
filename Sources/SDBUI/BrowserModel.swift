@@ -228,13 +228,12 @@ final class BrowserModel {
     private func captureQueryDocument() {
         let document = activeQueryDocument
         document.sql = sql; document.baseline = editorBaselineSQL
-        document.status = queryStatus; document.errorLocation = queryErrorLocation; document.log = statementLog
+        document.status = queryStatus; document.errorLocation = queryErrorLocation
         document.statusText = statusMessage; document.error = errorMessage
         document.browsing = isBrowsing; document.browseSQL = browseSQL
         document.browsePageSize = pageSize
         document.offset = contentOffset; document.hasMore = contentHasMore
-        document.expression = contentExpression; document.total = contentTotal
-        document.filterGroups = filterGroups; document.filterJoin = filterGroupJoin
+        document.total = contentTotal
         document.filter = contentFilter; document.sort = contentSort; document.columns = contentColumns
         document.filterColumn = filterColumn; document.filterOperator = filterOperator; document.filterValue = filterValue
         document.tableID = selectedTableID; document.cursor = editorCursor; document.selection = editorSelection
@@ -248,7 +247,7 @@ final class BrowserModel {
         pendingQuery = nil
         setSQL(document.sql); editorBaselineSQL = document.baseline
         editorCursor = document.cursor; editorSelection = document.selection
-        queryStatus = document.status; queryErrorLocation = document.errorLocation; statementLog = document.log
+        queryStatus = document.status; queryErrorLocation = document.errorLocation
         statusMessage = document.statusText; errorMessage = document.error
         // Restore the browse source before enabling paging or server sorting.
         let browseTable = document.browsing ? tables.first { $0.id == document.tableID } : nil
@@ -263,8 +262,7 @@ final class BrowserModel {
         }
         isBrowsing = browseTable != nil
         browseSQL = document.browseSQL; contentOffset = document.offset; contentHasMore = document.hasMore
-        contentExpression = document.expression; contentTotal = document.total
-        filterGroups = document.filterGroups; filterGroupJoin = document.filterJoin
+        filterEditorVisible = false; contentTotal = document.total
         contentFilter = document.filter; contentSort = document.sort; contentColumns = document.columns
         filterColumn = document.filterColumn; filterOperator = document.filterOperator; filterValue = document.filterValue
         queryDocumentsRevision += 1
@@ -314,8 +312,11 @@ final class BrowserModel {
         didSet {
             if isBrowsing {
                 queryPane.sortHandler = { [weak self] sort in self?.sortContent(by: sort) }
+                queryPane.filterHandler = { [weak self] column in self?.openColumnFilter(column) }
             } else {
                 queryPane.sortHandler = nil
+                queryPane.filterHandler = nil
+                filterEditorVisible = false
             }
             stateChanged()
         }
@@ -371,31 +372,17 @@ final class BrowserModel {
 
     // MARK: Browse filters, exact counts, pins and row changes
 
-    @ObservationIgnored var filterGroups: [FilterGroupDraft] = [] { didSet { stateChanged() } }
-    @ObservationIgnored var filterGroupJoin: FilterJoin = .any { didSet { stateChanged() } }
-    @ObservationIgnored var advancedFiltersVisible = false { didSet { stateChanged() } }
-    @ObservationIgnored private(set) var contentExpression: SQLDialect.FilterExpression? { didSet { stateChanged() } }
+    @ObservationIgnored var filterEditorVisible = false { didSet { stateChanged() } }
     @ObservationIgnored private(set) var contentTotal: Int64? { didSet { stateChanged() } }
     @ObservationIgnored private(set) var isCounting = false { didSet { stateChanged() } }
-    var effectiveFilter: SQLDialect.FilterExpression? { contentExpression ?? contentFilter.map(SQLDialect.FilterExpression.condition) }
-    func addFilterGroup() {
-        guard let column = contentColumns.first else { return }
-        let condition = contentFilter ?? SQLDialect.Filter(column: column, op: .equals, value: "")
-        filterGroups.append(FilterGroupDraft(conditions: [.init(filter: condition)]))
-    }
-    func applyAdvancedFilters() {
-        guard canRun, isBrowsing, let table = selectedTable else { return }
-        let conditions = filterGroups.flatMap(\.conditions)
-        guard !conditions.isEmpty, filterGroups.allSatisfy({ !$0.conditions.isEmpty }),
-              conditions.allSatisfy({ contentColumns.contains($0.filter.column) && !$0.filter.value.contains("\0") }) else {
-            errorMessage = "Add valid conditions with known columns and values without embedded NUL."
-            return
-        }
-        contentExpression = filterGroupJoin == .all ? .all(filterGroups.map(\.expression)) : .any(filterGroups.map(\.expression))
-        contentFilter = conditions.first?.filter
-        contentTotal = nil
-        contentOffset = 0
-        loadContent(table)
+    var effectiveFilter: SQLDialect.FilterExpression? { contentFilter.map(SQLDialect.FilterExpression.condition) }
+    func openColumnFilter(_ column: Int) {
+        guard canRun, isBrowsing, let result = queryPane.result, result.columns.indices.contains(column) else { return }
+        let name = result.columns[column].name
+        filterColumn = name
+        filterOperator = contentFilter?.column == name ? contentFilter?.op : .contains
+        filterValue = contentFilter?.column == name ? contentFilter!.value : ""
+        filterEditorVisible = true
     }
     func countContentRows() {
         guard canRun, isBrowsing, let table = selectedTable else { return }
@@ -559,7 +546,6 @@ final class BrowserModel {
         } catch { libraryFeedback = "History outcome could not be saved: \(error)" }
     }
 
-    @ObservationIgnored private(set) var statementLog: [String] = [] { didSet { stateChanged() } }
     @ObservationIgnored private(set) var pendingDisconnect = false { didSet { stateChanged() } }
     func requestDisconnect() {
         if isRunning { pendingDisconnect = true } else { disconnect() }
@@ -987,7 +973,6 @@ final class BrowserModel {
 
     func disconnect() {
         pendingDisconnect = false
-        statementLog = []
         saveDraft()
         draftKey = nil
         restorableProfileID = nil
@@ -1024,14 +1009,14 @@ final class BrowserModel {
         tables = []
         transferPoll?.cancel(); transferPoll = nil; transferProgress?.cancel(); transferProgress = nil; csvPreview = nil; transferVisible = false
         rowEditDraft = nil; editMetadata = [:]; editMetadataLoading = []; editMetadataError = ""
-        contentTotal = nil; isCounting = false; pinnedTableIDs = []; contentExpression = nil
+        contentTotal = nil; isCounting = false; pinnedTableIDs = []
         rowEstimates = [:]
         estimateLoads = []
         selectedDatabase = nil
         selectedTableID = nil
         loadedTables = [:]
         clearTablePanes()
-        for document in queryDocuments { document.pane.show(nil); document.browsing = false; document.status = nil; document.errorLocation = nil; document.log = []; document.error = nil; document.statusText = "Ready" }
+        for document in queryDocuments { document.pane.show(nil); document.browsing = false; document.status = nil; document.errorLocation = nil; document.error = nil; document.statusText = "Ready" }
         completionColumns = [:]
         completionTask?.cancel()
         errorMessage = nil
@@ -1169,7 +1154,7 @@ final class BrowserModel {
         guard canUseConnection else { return }
         guard id != selectedTableID else { return }
         selectedTableID = id
-        rowEditDraft = nil; filterGroups = []; advancedFiltersVisible = false
+        rowEditDraft = nil; filterEditorVisible = false
         if isBrowsing {
             // The rows belong to the previous table.
             isBrowsing = false
@@ -1180,7 +1165,7 @@ final class BrowserModel {
         loadedTables = [:]
         contentOffset = 0
         contentFilter = nil
-        contentExpression = nil; contentTotal = nil
+        contentTotal = nil
         contentSort = nil
         contentColumns = []
         filterColumn = nil
@@ -1271,7 +1256,7 @@ final class BrowserModel {
         guard canRun, let table = selectedTable else { return }
         contentOffset = 0
         contentFilter = nil
-        contentExpression = nil; contentTotal = nil
+        contentTotal = nil
         contentSort = nil
         contentColumns = []
         filterColumn = nil
@@ -1287,12 +1272,12 @@ final class BrowserModel {
                 ? (column: contentColumns[sort.column], ascending: sort.ascending) : nil
         }
         let sql = dialect.browseSQL(
-            table, filter: contentFilter, expression: contentExpression, orderBy: orderBy, limit: pageSize + 1,
+            table, filter: contentFilter, orderBy: orderBy, limit: pageSize + 1,
             offset: contentOffset)
         // As shown on the Query tab: the page's real limit (one extra row is
         // fetched only to know whether there's a next page).
         let displayedSQL = dialect.browseSQL(
-            table, filter: contentFilter, expression: contentExpression, orderBy: orderBy, limit: pageSize,
+            table, filter: contentFilter, orderBy: orderBy, limit: pageSize,
             offset: contentOffset)
         loadRowEstimate(table)
         browseSQL = displayedSQL
@@ -1394,8 +1379,9 @@ final class BrowserModel {
             contentFilter = SQLDialect.Filter(column: column, op: op, value: filterValue)
         } else {
             contentFilter = nil
-        contentExpression = nil; contentTotal = nil
         }
+        contentTotal = nil
+        filterEditorVisible = false
         contentOffset = 0
         loadContent(table)
     }
@@ -1425,7 +1411,7 @@ final class BrowserModel {
         filterOperator = filter.op
         filterValue = filter.value
         contentFilter = filter
-        contentExpression = nil; contentTotal = nil
+        contentTotal = nil
         contentOffset = 0
         loadContent(table)
     }
@@ -1434,7 +1420,9 @@ final class BrowserModel {
         guard canRun else { return }
         guard let table = selectedTable, contentFilter != nil else { return }
         contentFilter = nil
-        contentExpression = nil; contentTotal = nil
+        filterValue = ""
+        filterEditorVisible = false
+        contentTotal = nil
         contentOffset = 0
         loadContent(table)
     }
@@ -1618,7 +1606,6 @@ final class BrowserModel {
         pendingQuery = nil
         queryCancellationRequested = false
         queryStatus = QueryStatus(text: "Running…")
-        statementLog = []
         let runMaxRows = maxRows ?? 10_000
         // Running SQL by hand leaves table browsing (filter bar, pager,
         // server-side sorting); header clicks then sort in memory.
@@ -1639,10 +1626,10 @@ final class BrowserModel {
                 if queryCancellationRequested {
                     isRunning = false
                     statusMessage = "Query cancelled"
-                    statementLog.append("Cancelled before statement \(index + 1)/\(statements.count); remaining statements not executed.")
                     if let shown { queryPane.show(shown) }
                     queryStatus = .failed("Execution stopped. Statements already completed were not rolled back.",
                         elapsed: started.duration(to: clock.now), cancelled: true)
+                    queryStatus?.text += " · \(index)/\(statements.count) completed · \(statements.count - index) not executed"
                     return
                 }
                 statusMessage =
@@ -1660,15 +1647,11 @@ final class BrowserModel {
                 guard revision == sessionRevision, canUseConnection else { return }
                 switch outcome {
                     case .success(let result):
-                        let summary = QueryStatus.completed(result, elapsed: result.elapsed, statements: 1, maxRows: runMaxRows)
-                        statementLog.append("✓ Statement \(index + 1)/\(statements.count): \(summary.text)")
                         elapsed += result.elapsed
                         if !result.columns.isEmpty || shown?.columns.isEmpty != false {
                             shown = result
                         }
                     case .failure(let error):
-                        statementLog.append("✗ Statement \(index + 1)/\(statements.count): \(error)")
-                        if index + 1 < statements.count { statementLog.append("\(statements.count - index - 1) remaining statement(s) not executed.") }
                         if let shown { queryPane.show(shown) }
                         isRunning = false
                         let message = statements.count > 1
@@ -1678,6 +1661,10 @@ final class BrowserModel {
                         let cancelled = queryCancellationRequested || (adbcError.map { $0.message.contains("[CANCELLED]") || $0.message.contains("[SQLSTATE 57014]") } ?? false)
                         statusMessage = cancelled ? "Query cancelled" : "Query failed"
                         queryStatus = .failed(message, elapsed: started.duration(to: clock.now), cancelled: cancelled)
+                        if statements.count > 1 {
+                            queryStatus?.text += " · statement \(index + 1)/\(statements.count) · \(index) completed"
+                            if index + 1 < statements.count { queryStatus?.text += " · \(statements.count - index - 1) not executed" }
+                        }
                         if !explaining, sql == sourceSQL {
                             queryErrorLocation = QueryErrorLocation.resolve(position: adbcError?.statementPosition,
                                 statement: statement, source: sourceSQL, baseOffset: baseOffset)

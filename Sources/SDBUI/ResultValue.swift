@@ -185,6 +185,7 @@ extension DataGrid {
             sdbui_value_filters(UnsafeMutableRawPointer(widget.widgetPointer), prepareFilter, applyFilter, destroyFilter)
             sdbui_value_editing(UnsafeMutableRawPointer(widget.widgetPointer), pane === model.queryPane && model.canEditRows ? 1 : 0)
             sdbui_grid_headers(UnsafeMutableRawPointer(widget.widgetPointer), prepareHeader, applyHeader, destroyHeader)
+            sdbui_grid_header_filter_enabled(UnsafeMutableRawPointer(widget.widgetPointer), pane === model.queryPane && model.isBrowsing ? 1 : 0)
         }
     }
 }

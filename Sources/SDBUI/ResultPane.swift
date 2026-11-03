@@ -25,6 +25,7 @@ final class ResultPane {
     var sortHandler: (@MainActor (DataGridSort) -> Void)?
     /// Whether the column headers are clickable.
     var isSortable = true
+    var filterHandler: (@MainActor (Int) -> Void)?
     /// The SQL dialect and INSERT target for "Copy as SQL INSERT".
     var copyContext: @MainActor () -> (dialect: SQLDialect, table: String) = {
         (.generic, "table_name")
@@ -61,6 +62,7 @@ final class ResultPane {
             }
         case 7: frozenCount = 0
         case 8: hiddenColumns = []
+        case 9: filterHandler?(column); return nil
         default: return nil
         }
         revision += 1

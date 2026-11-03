@@ -31,6 +31,7 @@ extension ConnectionWorkspace {
             model.selectTab(.query)
         case .cancel:
             if preferencesVisible { preferencesVisible = false }
+            else if model.filterEditorVisible { model.filterEditorVisible = false }
             else if pendingCloseID != nil { cancelClose() }
             else if model.pendingQueryCloseID != nil { model.cancelQueryDocumentClose() }
             else if model.pendingDisconnect { model.cancelDisconnect() }

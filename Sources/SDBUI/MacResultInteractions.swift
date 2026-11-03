@@ -37,9 +37,10 @@ extension DataGrid {
             grid.headerMenu = { column in
                 guard columns.indices.contains(column) else { return [] }
                 let index = columns[column], revision = pane.revision
-                let titles = ["Sort ascending", "Sort descending", "Copy column name", "Copy column values", "Hide column", "Auto-fit width", "Freeze through this column", "Unfreeze columns", "Show all columns"]
+                let titles = ["Sort ascending", "Sort descending", "Copy column name", "Copy column values", "Hide column", "Auto-fit width", "Freeze through this column", "Unfreeze columns", "Show all columns", "Filter column…"]
                 return titles.enumerated().compactMap { command, title in
                     guard pane.isSortable || command > 1 else { return nil }
+                    guard command != 9 || pane.filterHandler != nil else { return nil }
                     return MacMenuAction(title: title, action: {
                         guard pane.revision == revision else { return }
                         if let text = pane.headerCommand(Int32(command), column: index) {

@@ -1,20 +1,6 @@
 import ADBCKit
 import Foundation
 
-enum FilterJoin: String, CaseIterable, CustomStringConvertible { case all = "AND", any = "OR"; var description: String { rawValue } }
-struct FilterConditionDraft: Identifiable, Hashable {
-    var id = UUID()
-    var filter: SQLDialect.Filter
-}
-struct FilterGroupDraft: Identifiable, Hashable {
-    var id = UUID()
-    var join: FilterJoin = .all
-    var conditions: [FilterConditionDraft]
-    var expression: SQLDialect.FilterExpression {
-        let children = conditions.map { SQLDialect.FilterExpression.condition($0.filter) }
-        return join == .all ? .all(children) : .any(children)
-    }
-}
 struct TableEditMetadata: Hashable, Sendable {
     var columns: [TableEditColumn]
     var keys: [String]
