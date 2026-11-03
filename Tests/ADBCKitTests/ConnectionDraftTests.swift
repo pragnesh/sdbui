@@ -98,7 +98,10 @@ final class ConnectionDraftTests: XCTestCase {
         XCTAssertEqual(loaded.password, draft.password)
         XCTAssertThrowsError(try draft.save(in: root))
         loaded.database = "changed"
-        XCTAssertEqual(try loaded.save(in: root), url)
+        let updatedURL = try loaded.save(in: root)
+        XCTAssertEqual(
+            updatedURL.resolvingSymlinksInPath().standardizedFileURL.path,
+            url.resolvingSymlinksInPath().standardizedFileURL.path)
         loaded.name = "Work/Copy"
         let copy = try loaded.save(in: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
