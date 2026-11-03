@@ -5,6 +5,62 @@ A native desktop SQL browser built with [SwiftCrossUI](https://swiftcrossui.dev)
 [ADBC](https://arrow.apache.org/adbc/) drivers — the same approach as
 [databow](https://github.com/columnar-tech/databow).
 
+## Platform packages
+
+The [release workflow](.github/workflows/release.yml) builds natively on Linux x86_64 and ARM64, and on macOS
+Apple Silicon and Intel. Each architecture has its own cache, package names
+and checksums. Tag releases publish only after every platform job succeeds;
+pull requests and manual runs upload test artifacts without publishing.
+
+On Linux, build the existing portable archive and Debian package plus AppImage:
+
+```sh
+scripts/package-linux.sh --appimage
+```
+
+AppImage tooling and its runtime are downloaded from official releases and
+verified against pinned SHA-256 hashes. GTK 4, SQLite, GIO/GdkPixbuf modules,
+icons, schemas and application resources are included. ADBC drivers and the
+optional Python transfer environment stay external. The baseline is Ubuntu
+24.04 (glibc 2.39) or a compatible newer distribution; an AppImage does not
+remove this minimum libc requirement. Build ARM64 packages on an ARM64 host;
+renaming an x86_64 executable does not produce an ARM64 build.
+
+```sh
+chmod +x sdbui-*.AppImage
+./sdbui-<version>-linux-<architecture>.AppImage
+# Optional CSV/import and Arrow/Parquet runtime:
+./sdbui-<version>-linux-<architecture>.AppImage --setup-transfers
+```
+
+On systems without FUSE, use `--appimage-extract-and-run` or extract with
+`--appimage-extract` and launch `squashfs-root/AppRun`. Drivers installed with
+`dbc` must match the app's architecture. The AppImage launcher preserves normal
+profile/driver discovery and SSH access.
+
+On macOS 14 or later, the app uses an AppKit `NSTableView` grid with recycled
+cells, sorting, resizing, multi-row copy, value tooltips/full-value windows,
+cell/header menus and synchronized frozen columns. Workspace shortcuts accept
+Command as well as Control; Command+Return runs the selected/current SQL.
+GTK's SQL highlighting/completion hooks are not yet ported to AppKit.
+Build an architecture-specific application bundle on the matching Mac:
+
+```sh
+scripts/package-macos.sh --version 0.0.0-local
+```
+
+This produces a ZIP containing `SDB Query Browser.app`, its Swift runtime and
+transfer resources. Install by dragging the app into Applications. Bundles are
+ad-hoc signed by default; `SDBUI_CODESIGN_IDENTITY` selects a local signing
+identity. Notarization is not configured, so downloaded builds require approval
+in macOS Privacy & Security before first launch. Install ADBC drivers separately.
+For optional transfers, run Python 3.9–3.13 against
+`/Applications/SDB Query Browser.app/Contents/Resources/setup-transfers.py`.
+
+The AppKit implementation and ARM64 jobs require validation on their native
+runners; they cannot be compiled or exercised on the Linux x86_64 development
+host. CI includes macOS grid tests and packaged application launch checks.
+
 ## Import and export
 
 Select a table, open the **Query** pane, then choose **Import / export**.

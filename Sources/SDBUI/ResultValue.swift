@@ -190,5 +190,13 @@ extension DataGrid {
 }
 #else
 import SwiftCrossUI
-extension View { func synchronizingFrozenGrid() -> some View { self } }
+extension View {
+    @ViewBuilder func synchronizingFrozenGrid() -> some View {
+        #if canImport(AppKitBackend)
+        synchronizingMacGrids()
+        #else
+        self
+        #endif
+    }
+}
 #endif

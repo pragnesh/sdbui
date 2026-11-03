@@ -49,6 +49,8 @@ extension TextEditor {
                     document.selection.map { Int32(clamping: $0.upperBound) } ?? -1, 1)
             }
         }
+        #elseif canImport(AppKitBackend)
+        assistingMacSQL(model, navigation: navigation)
         #else
         self
         #endif

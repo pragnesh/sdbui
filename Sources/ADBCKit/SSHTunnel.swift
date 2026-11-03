@@ -181,6 +181,9 @@ final class SSHTunnel: @unchecked Sendable {
 
     private static func address(port: Int) -> sockaddr_in {
         var address = sockaddr_in()
+        #if os(macOS)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = UInt16(port).bigEndian
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
@@ -256,7 +259,14 @@ final class ChildProcess: @unchecked Sendable {
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         var pid = pid_t()
+        #if os(macOS)
+        // Darwin marks direct access to environ unavailable to Swift.
+        let childEnvironment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { childEnvironment.forEach { free($0) } }
+        let result = posix_spawn(&pid, executable, &actions, &attributes, argv, childEnvironment)
+        #else
         let result = posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
+        #endif
         guard result == 0 else { throw ADBCError(String(cString: strerror(result))) }
         self.pid = pid
     }

@@ -353,6 +353,8 @@ struct PaneGrid: View {
         )
         #if canImport(GtkBackend)
             return grid.inspectingValues(in: pane, model: model, columns: columns).queryGridFontSize(model.queryFontSize)
+        #elseif canImport(AppKitBackend)
+            return grid.inspectingMacValues(in: pane, model: model, columns: columns)
         #else
             return grid
         #endif

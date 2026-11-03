@@ -49,6 +49,8 @@ extension NavigationSplitView {
             let source = Unmanaged.passRetained(LayoutSource(model: model)).toOpaque()
             sdbui_session_sidebar(UnsafeMutableRawPointer(widget.widgetPointer), Int32(model.sidebarWidth), source, layoutChanged, destroyLayout)
         }
+        #elseif canImport(AppKitBackend)
+        persistingMacSidebar(model)
         #else
         self
         #endif

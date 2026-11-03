@@ -1,5 +1,7 @@
 #if canImport(GtkBackend)
     import GtkBackend
+#elseif canImport(AppKitBackend)
+    import AppKitBackend
 #else
     import DefaultBackend
 #endif
@@ -47,7 +49,7 @@ extension NavigationSplitView {
     /// the sidebar (GTK's default for a `Paned`). The divider stays draggable.
     @ViewBuilder
     func keepingSidebarWidthOnResize(model: BrowserModel) -> some View {
-        #if canImport(GtkBackend)
+        #if canImport(GtkBackend) || canImport(AppKitBackend)
             persistingSidebar(model)
         #else
             self

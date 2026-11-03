@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build a release of SDB Query Browser and package it for Linux.
 #
-#   scripts/package-linux.sh [--version X.Y.Z] [--skip-build] [--no-deb]
+#   scripts/package-linux.sh [--version X.Y.Z] [--skip-build] [--no-deb] [--appimage]
 #
 # Produces in dist/:
 #   sdbui-<version>-linux-<arch>.tar.gz   portable archive with install.sh
@@ -18,12 +18,14 @@ cd "$root"
 version=""
 build=1
 deb=1
+appimage=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) version="$2"; shift 2 ;;
         --version=*) version="${1#--version=}"; shift ;;
         --skip-build) build=0; shift ;;
         --no-deb) deb=0; shift ;;
+        --appimage) appimage=1; shift ;;
         -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -42,6 +44,10 @@ if [ -z "$version" ]; then
     fi
 fi
 case "$version" in
+    *[!A-Za-z0-9.+~_-]*) echo "Invalid version: $version" >&2; exit 2 ;;
+esac
+[ "$(uname -s)" = Linux ] || { echo "Build Linux packages on Linux." >&2; exit 2; }
+case "$version" in
     [0-9]*) ;;
     *) echo "Version must start with a digit (got '$version')" >&2; exit 2 ;;
 esac
@@ -49,7 +55,7 @@ esac
 case "$(uname -m)" in
     x86_64) arch=x86_64; debarch=amd64 ;;
     aarch64|arm64) arch=aarch64; debarch=arm64 ;;
-    *) arch=$(uname -m); debarch=$arch ;;
+    *) echo "Unsupported architecture: $(uname -m)" >&2; exit 2 ;;
 esac
 
 app_id=dev.sdbui.QueryBrowser
@@ -68,6 +74,10 @@ fi
 bin_dir=$(swift build -c release --show-bin-path 2>/dev/null || echo "$root/.build/release")
 binary="$bin_dir/sdbui"
 [ -x "$binary" ] || { echo "Release binary not found at $binary" >&2; exit 1; }
+
+# Never label a cached/cross-built executable as the current host architecture.
+case "$arch" in x86_64) machine='Advanced Micro Devices X86-64' ;; aarch64) machine='AArch64' ;; esac
+readelf -h "$binary" | grep -F "$machine" >/dev/null || { echo "Binary architecture does not match $arch." >&2; exit 1; }
 
 # Refuse to ship a binary that still needs the toolchain's Swift libraries.
 if ldd "$binary" | grep -q 'libswiftCore\|libFoundation\.so'; then
@@ -144,7 +154,12 @@ EOF
     fi
 fi
 
-(cd "$dist" && sha256sum $artifacts > SHA256SUMS)
+if [ "$appimage" = 1 ]; then
+    python3 scripts/package-appimage.py --stage "$stage" --output "$dist/$name.AppImage"
+    artifacts="$artifacts $name.AppImage"
+fi
+(cd "$dist" && sha256sum $artifacts > "SHA256SUMS-linux-$arch")
+cp "$dist/SHA256SUMS-linux-$arch" "$dist/SHA256SUMS"
 echo "==> Done:"
 for artifact in $artifacts; do
     echo "    dist/$artifact ($(du -h "$dist/$artifact" | cut -f1))"

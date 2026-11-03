@@ -58,7 +58,10 @@ public struct TransferRuntime: Sendable {
             process.arguments = ["-I", "-c", """
                 import json,sys,sysconfig,os,ctypes.util,pyarrow
                 lib=os.path.join(sysconfig.get_config_var('LIBDIR') or '',sysconfig.get_config_var('LDLIBRARY') or '')
-                if not os.path.isfile(lib): lib=ctypes.util.find_library('python'+sysconfig.get_python_version())
+                if not os.path.isfile(lib):
+                    framework=sysconfig.get_config_var('PYTHONFRAMEWORK') or 'Python'
+                    candidates=[os.path.join(sys.base_prefix,framework),os.path.join(sysconfig.get_config_var('PYTHONFRAMEWORKPREFIX') or '', framework+'.framework', 'Versions',sysconfig.get_python_version(),framework)]
+                    lib=next((p for p in candidates if os.path.isfile(p)),None) or ctypes.util.find_library('python'+sysconfig.get_python_version()) or ctypes.util.find_library(framework)
                 print(json.dumps(dict(library=lib,home=sys.base_prefix,site=os.path.dirname(os.path.dirname(pyarrow.__file__)))))
                 """]
             process.standardOutput = output

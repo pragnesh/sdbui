@@ -31,8 +31,9 @@ def main():
         if check.returncode == 0 and check.stdout.strip() == VERSION:
             print(f'Transfer runtime already ready: {python}')
             raise SystemExit(0)
+    framework = sysconfig.get_config_var('PYTHONFRAMEWORK') or 'Python'
     library = Path(sysconfig.get_config_var('LIBDIR') or '') / (sysconfig.get_config_var('LDLIBRARY') or '')
-    if not library.is_file() and not ctypes.util.find_library('python' + sysconfig.get_python_version()):
+    if not library.is_file() and not (Path(sys.base_prefix) / framework).is_file() and not ctypes.util.find_library('python' + sysconfig.get_python_version()) and not ctypes.util.find_library(framework):
         parser.error('Python shared library missing. Install the matching OS libpython package, then retry.')
     abi = f'cp{sys.version_info.major}{sys.version_info.minor}'
     machine = platform.machine().lower()

@@ -79,6 +79,8 @@ extension View {
             let context = Unmanaged.passRetained(ShortcutSource(workspace)).toOpaque()
             sdbui_shortcuts_install(UnsafeMutableRawPointer(widget.widgetPointer), context, shortcutAction, destroyShortcutSource)
         }
+        #elseif canImport(AppKitBackend)
+        macWorkspaceShortcuts(workspace)
         #else
         self
         #endif
@@ -99,6 +101,8 @@ extension View {
     func shortcutFocusTarget(_ name: String) -> some View {
         #if canImport(GtkBackend)
         inspect { widget in sdbui_shortcut_target(UnsafeMutableRawPointer(widget.widgetPointer), name) }
+        #elseif canImport(AppKitBackend)
+        macFocusTarget(name)
         #else
         self
         #endif

@@ -72,6 +72,8 @@ extension View {
                     navigation.appliedID = location.id
                 }
             }
+        #elseif canImport(AppKitBackend)
+            revealingMacQueryError(model, navigation: navigation)
         #else
             self
         #endif
