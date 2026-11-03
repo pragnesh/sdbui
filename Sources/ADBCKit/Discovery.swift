@@ -236,9 +236,12 @@ public enum Discovery {
                 guard url.pathExtension == "toml",
                     (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
                     var profile = try? loadProfile(at: url) else { continue }
-                let root = directory.standardizedFileURL.path
-                let path = url.deletingPathExtension().standardizedFileURL.path
-                let name = String(path.dropFirst(root.count + (root.hasSuffix("/") ? 0 : 1)))
+                let root = directory.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+                let path = url.resolvingSymlinksInPath().deletingPathExtension()
+                    .standardizedFileURL.pathComponents
+                guard path.starts(with: root) else { continue }
+                let name = path.dropFirst(root.count).joined(separator: "/")
+                guard !name.isEmpty else { continue }
                 guard seen.insert(name).inserted else { continue }
                 profile.id = name
                 profiles.append(profile)

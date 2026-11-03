@@ -87,7 +87,10 @@ final class ConnectionDraftTests: XCTestCase {
         draft.user = "name"
         draft.password = "quote\"slash\\newline\n\u{01}"
         let url = try draft.save(in: root)
-        XCTAssertEqual(url, root.appendingPathComponent("Work/Local.toml"))
+        XCTAssertEqual(
+            url.resolvingSymlinksInPath().standardizedFileURL.path,
+            root.appendingPathComponent("Work/Local.toml")
+                .resolvingSymlinksInPath().standardizedFileURL.path)
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
         let profile = try XCTUnwrap(Discovery.profiles(in: [root]).first)
