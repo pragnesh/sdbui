@@ -79,6 +79,13 @@ echo "==> Staging $name"
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/applications" "$stage/share/icons/hicolor/scalable/apps"
 cp "$binary" "$stage/bin/sdbui"
+# SwiftPM resolves Bundle.module beside the executable in an installed build.
+transfer_bundle="$bin_dir/sdbui_ADBCKit.bundle"
+[ -d "$transfer_bundle" ] || transfer_bundle="$bin_dir/sdbui_ADBCKit.resources"
+[ -d "$transfer_bundle" ] || { echo "Transfer resource bundle missing; rebuild the release." >&2; exit 1; }
+cp -R "$transfer_bundle" "$stage/bin/"
+mkdir -p "$stage/share/sdbui"
+cp scripts/setup-transfers.py "$stage/share/sdbui/"
 strip "$stage/bin/sdbui"
 cp packaging/linux/$app_id.desktop "$stage/share/applications/"
 cp packaging/linux/$app_id.svg "$stage/share/icons/hicolor/scalable/apps/"
@@ -101,6 +108,9 @@ if [ "$deb" = 1 ]; then
         mkdir -p "$deb_root/DEBIAN" "$deb_root/usr/bin" "$deb_root/usr/share/applications" \
             "$deb_root/usr/share/icons/hicolor/scalable/apps" "$deb_root/usr/share/doc/sdbui"
         cp "$stage/bin/sdbui" "$deb_root/usr/bin/"
+        cp -R "$stage/bin/$(basename "$transfer_bundle")" "$deb_root/usr/bin/"
+        mkdir -p "$deb_root/usr/share/sdbui"
+        cp "$stage/share/sdbui/setup-transfers.py" "$deb_root/usr/share/sdbui/"
         cp "$stage/share/applications/$app_id.desktop" "$deb_root/usr/share/applications/"
         cp "$stage/share/icons/hicolor/scalable/apps/$app_id.svg" \
             "$deb_root/usr/share/icons/hicolor/scalable/apps/"

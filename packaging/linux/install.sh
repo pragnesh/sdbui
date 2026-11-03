@@ -35,6 +35,15 @@ mkdir -p "$manifest_dir"
 : > "$manifest.tmp"
 echo "Installing to $prefix"
 install_file 755 "$here/bin/sdbui" "$prefix/bin/sdbui"
+# SwiftPM uses .bundle or .resources depending on the Swift build system.
+for bundle in "$here"/bin/sdbui_ADBCKit.*; do
+    [ -d "$bundle" ] || continue
+    find "$bundle" -type f | while IFS= read -r source; do
+        relative=${source#"$here/bin/"}
+        install_file 644 "$source" "$prefix/bin/$relative"
+    done
+done
+install_file 644 "$here/share/sdbui/setup-transfers.py" "$manifest_dir/setup-transfers.py"
 install_file 644 "$here/share/applications/$app_id.desktop" "$prefix/share/applications/$app_id.desktop"
 install_file 644 "$here/share/icons/hicolor/scalable/apps/$app_id.svg" \
     "$prefix/share/icons/hicolor/scalable/apps/$app_id.svg"

@@ -256,3 +256,34 @@ public enum SQLDialect: Sendable, Equatable {
         self == .mysql ? "SHOW CREATE TABLE \(qualifiedName(of: table))" : nil
     }
 }
+
+extension SQLDialect {
+    func transferColumnsSQL(_ table: TableInfo) -> String? {
+        let schema = literal(table.namespace), name = literal(table.name)
+        switch self {
+        case .postgres:
+            return "SELECT column_name, data_type, CASE WHEN is_generated <> 'NEVER' THEN 'YES' ELSE 'NO' END, is_identity FROM information_schema.columns WHERE table_schema = \(schema) AND table_name = \(name) ORDER BY ordinal_position"
+        case .mysql:
+            return "SELECT COLUMN_NAME, DATA_TYPE, IF(COALESCE(GENERATION_EXPRESSION,'') <> '', 'YES','NO'), IF(EXTRA LIKE '%auto_increment%', 'YES','NO') FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = \(schema) AND TABLE_NAME = \(name) ORDER BY ORDINAL_POSITION"
+        case .generic: return nil
+        }
+    }
+
+    func transferSQL(_ table: TableInfo, format: TableExportFormat, columns: [TransferColumn], expression: FilterExpression?, orderBy: (column: String, ascending: Bool)?) throws -> String {
+        var projection = "*"
+        if format == .sql {
+            guard self != .generic else { throw ADBCError("SQL INSERT export requires PostgreSQL or MySQL metadata.") }
+            let fields = columns.filter { !$0.computed }.map { column in
+                let field = "sdbui_source." + quote(column.name)
+                let cast = self == .postgres ? "CAST(\(field) AS TEXT)" : (Self.binaryTypes.contains(column.type.lowercased()) ? "HEX(\(field))" : "CAST(\(field) AS CHAR CHARACTER SET utf8mb4)")
+                return cast + " AS " + quote(column.name)
+            }
+            projection = fields.isEmpty ? "1 AS sdbui_default" : fields.joined(separator: ", ")
+        }
+        var sql = "SELECT \(projection) FROM \(qualifiedName(of: table)) AS sdbui_source"
+        if let expression { sql += " WHERE " + whereClause(for: expression) }
+        if let orderBy { sql += " ORDER BY sdbui_source.\(quote(orderBy.column)) \(orderBy.ascending ? "ASC" : "DESC")" }
+        return sql
+    }
+    static let binaryTypes: Set<String> = ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob", "bit"]
+}

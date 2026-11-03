@@ -87,6 +87,23 @@ void cadbc_array_release(struct ArrowArray* array);
 
 void cadbc_free_string(char* string);
 
+// Optional transfer runtime and streaming bulk append.
+typedef struct CAdbcTransfer CAdbcTransfer;
+CAdbcTransfer *cadbc_transfer_new(void);
+void cadbc_transfer_free(CAdbcTransfer *token);
+void cadbc_transfer_cancel(CAdbcTransfer *token);
+int cadbc_transfer_cancelled(CAdbcTransfer *token);
+int64_t cadbc_transfer_rows(CAdbcTransfer *token);
+uintptr_t cadbc_transfer_poll_address(void);
+uintptr_t cadbc_transfer_progress_address(void);
+void *cadbc_python_scope(const char *library, const char *home, const char *script,
+                         const char *configuration, char **error_out);
+char *cadbc_python_result(void *scope);
+void cadbc_python_scope_free(void *scope);
+AdbcStatusCode cadbc_ingest_append(CAdbcSession *session, const char *table,
+                         const char *catalog, const char *schema,
+                         struct ArrowArrayStream *stream, int64_t *rows, char **error_out);
+
 #ifdef __cplusplus
 }
 #endif

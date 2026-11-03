@@ -10,7 +10,7 @@ struct QueryTab: View {
 
     var body: some View {
         let _ = revision
-        let _ = model.watch("query-library-layout", of: { [AnyHashable(model.librarySection?.rawValue), AnyHashable(model.queryDocumentsRevision), AnyHashable(model.rowEditDraft != nil)] }) { revision &+= 1 }
+        let _ = model.watch("query-library-layout", of: { [AnyHashable(model.librarySection?.rawValue), AnyHashable(model.queryDocumentsRevision), AnyHashable(model.rowEditDraft != nil), AnyHashable(model.transferVisible)] }) { revision &+= 1 }
         VStack(alignment: .leading, spacing: 8) {
             QueryDocumentBar(model: model)
             QueryToolbar(model: model)
@@ -30,7 +30,9 @@ struct QueryTab: View {
             FilterBar(model: model)
             AdvancedFilterView(model: model)
             RowEditingBar(model: model)
-            if model.rowEditDraft != nil {
+            if model.transferVisible {
+                TransferView(model: model).frame(maxHeight: .infinity)
+            } else if model.rowEditDraft != nil {
                 RowEditorView(model: model).frame(maxHeight: .infinity)
             } else {
             PaneGrid(
@@ -74,9 +76,10 @@ struct QueryToolbar: View {
             Button("Cancel") { model.cancelQuery() }
                 .disabled(!model.isRunning)
                 .fixedSize()
-            Button("Export CSV") { export() }
+            Button("Export loaded CSV") { export() }
                 .disabled(!model.queryPane.hasColumns)
                 .fixedSize()
+            Button("Import / export") { model.toggleTransfers() }.disabled(!model.canRun).fixedSize()
             Spacer()
             Text("Max rows")
                 .fixedSize()

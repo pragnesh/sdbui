@@ -383,6 +383,39 @@ AdbcStatusCode cadbc_execute(CAdbcSession* session, const char* sql,
   return cadbc_execute_options(session, sql, 0, out, rows_affected, error_position, error_out);
 }
 
+AdbcStatusCode cadbc_ingest_append(CAdbcSession *session, const char *table,
+                         const char *catalog, const char *schema,
+                         struct ArrowArrayStream *stream, int64_t *rows, char **error_out) {
+  if (!session->driver.StatementBindStream || !session->driver.StatementSetOption) {
+    set_error(error_out, format_string("This driver does not support Arrow bulk ingestion."));
+    return ADBC_STATUS_NOT_IMPLEMENTED;
+  }
+  struct AdbcStatement statement = {0};
+  statement.private_driver = &session->driver;
+  struct AdbcError error = make_error();
+  AdbcStatusCode status = session->driver.StatementNew(&session->connection, &statement, &error);
+  if (status != ADBC_STATUS_OK) { take_error(status, &error, "Could not create import statement", error_out); return status; }
+#define INGEST_OPTION(key, value) do { error = make_error(); status = session->driver.StatementSetOption(&statement, key, value, &error); if (status != ADBC_STATUS_OK) goto finished; } while (0)
+  INGEST_OPTION(ADBC_INGEST_OPTION_TARGET_TABLE, table);
+  INGEST_OPTION(ADBC_INGEST_OPTION_MODE, ADBC_INGEST_OPTION_MODE_APPEND);
+  if (catalog && *catalog) INGEST_OPTION(ADBC_INGEST_OPTION_TARGET_CATALOG, catalog);
+  if (schema && *schema) INGEST_OPTION(ADBC_INGEST_OPTION_TARGET_DB_SCHEMA, schema);
+#undef INGEST_OPTION
+  error = make_error();
+  status = session->driver.StatementBindStream(&statement, stream, &error);
+  if (status != ADBC_STATUS_OK) goto finished;
+  error = make_error();
+  status = session->driver.StatementExecuteQuery(&statement, NULL, rows, &error);
+finished:
+  if (status != ADBC_STATUS_OK) take_error(status, &error, "CSV bulk import failed", error_out);
+  else if (error.release) error.release(&error);
+  error = make_error();
+  AdbcStatusCode released = session->driver.StatementRelease(&statement, &error);
+  if (released != ADBC_STATUS_OK && status == ADBC_STATUS_OK) { status = released; take_error(released, &error, "Could not finish import statement", error_out); }
+  else if (error.release) error.release(&error);
+  return status;
+}
+
 int cadbc_autocommit_enabled(CAdbcSession* session) {
   if (!session->driver.ConnectionGetOption) return -1;
   char value[32] = {0};

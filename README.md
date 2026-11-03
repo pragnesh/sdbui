@@ -5,6 +5,55 @@ A native desktop SQL browser built with [SwiftCrossUI](https://swiftcrossui.dev)
 [ADBC](https://arrow.apache.org/adbc/) drivers — the same approach as
 [databow](https://github.com/columnar-tech/databow).
 
+## Import and export
+
+Select a table, open the **Query** pane, then choose **Import / export**.
+**Export table…** streams the entire table to CSV, JSON, SQL `INSERT`, Arrow
+IPC (`.arrow`) or Parquet. Enable **Apply current filters** to export the
+current browsing filter; browsing sort is preserved. Paging and **Max rows**
+do not limit this export. **Export loaded CSV** still saves only the rows
+already loaded in the result grid.
+
+These transfers use an optional, private PyArrow runtime. With Python 3.9–3.13
+and its shared library installed, run once from a source checkout:
+
+```sh
+python3 scripts/setup-transfers.py
+```
+
+For an installed Linux release, run
+`python3 <prefix>/share/sdbui/setup-transfers.py` instead (`<prefix>` is
+`~/.local`, `/usr/local`, or `/usr` for a Debian package). The installer downloads
+the pinned PyArrow wheel, verifies its SHA-256 checksum against PyPI metadata,
+and installs it into a dedicated environment under the user data directory.
+It does not change system Python packages. Restart the app after setup.
+Developers can use `--directory .build/transfer-python`; `SDBUI_PYTHON` can
+select another Python executable containing PyArrow. Regular browsing and
+loaded-result CSV export work without this runtime.
+
+**Choose CSV…**, select delimiter/header/NULL options, then **Preview CSV**.
+Map each source column to a destination column or skip it. Review the first
+20 rows, then **Confirm append**. Imports use ADBC bulk loading into an
+existing PostgreSQL or transactional MySQL table. Computed columns cannot be
+mapped; identity columns are skipped by default. Unmapped columns use database
+defaults. Duplicate mappings are rejected. Read-only favorites disable import,
+and manual transactions must be finished first. Errors or cancellation roll
+back all imported batches; a changed file or table schema requires a new preview.
+
+CSV files use UTF-8, doubled quotes, and quoted multiline fields. By default,
+an unquoted `\N` means NULL; quoted `"\N"` is literal text, and quoted `""`
+is an empty string. Binary values use complete `\x`-prefixed hexadecimal text.
+JSON keeps full numbers and encodes dates/times as strings and binary as hex.
+Arrow and Parquet preserve the driver's Arrow types. CSV conversion validates
+the destination types; unsupported nested types must be skipped or converted
+before import. SQL exports omit computed columns, preserve explicit identity
+values, and require an existing compatible table. They contain data only, not
+DDL, and do not reset identity/serial sequences after restoration.
+
+Exports write a private temporary file and replace the destination only after
+successful completion. **Cancel** stops a transfer; progress shows rows processed.
+Large transfers keep one Arrow batch in memory instead of accumulating the table.
+
 ## How connections work (borrowed from databow)
 
 - **Drivers** are installed with [dbc](https://docs.columnar.tech/dbc/)

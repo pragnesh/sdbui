@@ -2,7 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test_binary=$(mktemp /tmp/sdbui-cadbc-test.XXXXXX)
-trap 'rm -f "$test_binary"' EXIT
+trap 'rm -f "$test_binary" "$test_binary.o"' EXIT
 "${CC:-cc}" -Wall -Wextra -Werror -I Sources/CADBC/include \
     Tests/CADBCStreamTests/lifetime.c -ldl -o "$test_binary"
 "$test_binary"
+
+"${CC:-cc}" -Wall -Wextra -Werror -I Sources/CADBC/include \
+    Tests/CADBCStreamTests/ingestion.c -ldl -o "$test_binary"
+"$test_binary"
+"${CC:-cc}" -Wall -Wextra -Werror -I Sources/CADBC/include -c \
+    Sources/CADBC/transfer_runtime.c -o "$test_binary.o"
+rm -f "$test_binary.o"

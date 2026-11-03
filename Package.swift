@@ -34,7 +34,7 @@ let package = Package(
             linkerSettings: [.linkedLibrary("dl", .when(platforms: [.linux]))]
         ),
         // Swift API: driver manifests, connection profiles, Arrow decoding.
-        .target(name: "ADBCKit", dependencies: ["CADBC"]),
+        .target(name: "ADBCKit", dependencies: ["CADBC"], resources: [.copy("Resources/transfer.py")]),
         .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3", providers: [.apt(["libsqlite3-dev"])]),
         .executableTarget(
             name: "SDBUI",

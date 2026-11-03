@@ -201,6 +201,123 @@ public final class ADBCConnection: @unchecked Sendable {
         }
     }
 
+    private func transferColumns(_ table: TableInfo) throws -> [TransferColumn] {
+        guard let sql = dialect.transferColumnsSQL(table) else { return [] }
+        let result = try executeLocked(sql, maxRows: 10000)
+        guard !result.truncated else { throw ADBCError("Too many columns for transfer metadata.") }
+        return (0..<result.rowCount).map { row in
+            TransferColumn(name: result.cell(row, 0, maxLength: nil) ?? "", type: result.cell(row, 1) ?? "",
+                           computed: result.cell(row, 2) == "YES", identity: result.cell(row, 3) == "YES")
+        }
+    }
+
+    private func transferStream(_ sql: String, body: (inout ArrowArrayStream) throws -> Void) throws {
+        try tunnel?.check()
+        var stream = ArrowArrayStream(), rows: Int64 = -1, position: Int64 = 0
+        var error: UnsafeMutablePointer<CChar>?
+        guard cadbc_execute_options(session, sql, 0, &stream, &rows, &position, &error) == ADBC_STATUS_OK else {
+            throw takeError(error, fallback: "Transfer query failed")
+        }
+        defer { cadbc_stream_release(&stream) }
+        try body(&stream)
+    }
+
+    /// Consumes the original Arrow batches, without the browser's row limit.
+    public func exportTable(_ table: TableInfo, to url: URL, format: TableExportFormat,
+                            expression: SQLDialect.FilterExpression? = nil,
+                            orderBy: (column: String, ascending: Bool)? = nil, readOnly: Bool = false,
+                            runtime: TransferRuntime, progress: TransferProgress) throws -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        let ownsTransaction = !userTransaction && !transactionSettingsUnknown && cadbc_autocommit_enabled(session) == 1 && dialect != .generic
+        guard !readOnly || ownsTransaction else { throw ADBCError("Reconnect before exporting from a read-only favorite with a manual transaction.") }
+        if ownsTransaction { _ = try executeLocked(dialect == .postgres ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY", maxRows: 0) }
+        defer { if ownsTransaction { do { _ = try executeLocked("ROLLBACK", maxRows: 0) } catch { transactionSettingsUnknown = true } } }
+        // Acquire the schema lock before inspecting generated and identity columns.
+        _ = try executeLocked("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0", maxRows: 0)
+        let columns = try transferColumns(table)
+        let sql = try dialect.transferSQL(table, format: format, columns: columns, expression: expression, orderBy: orderBy)
+        try transferStream(sql) { stream in
+            try withUnsafeMutablePointer(to: &stream) { address in
+                let scope = try runtime.scope([
+                    "mode": "export", "stream": UInt(bitPattern: address), "path": url.path,
+                    "format": format.rawValue, "dialect": dialect == .postgres ? "postgres" : dialect == .mysql ? "mysql" : "generic",
+                    "tableSQL": dialect.qualifiedName(of: table), "identity": columns.contains { $0.identity },
+                    "sqlText": true, "sqlBinary": columns.filter { SQLDialect.binaryTypes.contains($0.type.lowercased()) }.map(\.name),
+                    "skip": format == .sql && columns.allSatisfy({ $0.computed }) ? ["sdbui_default"] : []
+                ], progress: progress)
+                withExtendedLifetime(scope) {}
+            }
+        }
+        return progress.rows
+    }
+
+    public func previewCSV(_ url: URL, into table: TableInfo, options: CSVImportOptions,
+                           runtime: TransferRuntime, progress: TransferProgress) throws -> CSVImportPreview {
+        lock.lock(); defer { lock.unlock() }
+        let columns = try transferColumns(table)
+        guard !columns.isEmpty else { throw ADBCError("CSV import requires PostgreSQL or MySQL column metadata.") }
+        var preview: CSVImportPreview?
+        try transferStream("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0") { stream in
+            try withUnsafeMutablePointer(to: &stream) { address in
+                let scope = try runtime.scope(["mode": "preview", "path": url.path, "options": try options.jsonObject(), "schemaStream": UInt(bitPattern: address)], progress: progress)
+                preview = try scope.result(CSVImportPreview.self)
+            }
+        }
+        preview!.columns = columns
+        return preview!
+    }
+
+    /// Appends using ADBC bulk ingestion; failure or cancellation rolls back every batch.
+    public func importCSV(_ url: URL, into table: TableInfo, options: CSVImportOptions,
+                          preview: CSVImportPreview, mapping: [String?],
+                          runtime: TransferRuntime, progress: TransferProgress) throws -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        guard dialect != .generic, !userTransaction, !transactionSettingsUnknown, cadbc_autocommit_enabled(session) == 1 else {
+            throw ADBCError("CSV import requires confirmed autocommit. Finish manual transactions or reconnect first.")
+        }
+        guard mapping.count == preview.headers.count, mapping.compactMap({ $0 }).count > 0,
+              Set(mapping.compactMap { $0 }).count == mapping.compactMap({ $0 }).count else { throw ADBCError("Map at least one CSV column, without duplicate targets.") }
+        _ = try executeLocked(dialect == .postgres ? "BEGIN" : "START TRANSACTION", maxRows: 0)
+        do {
+            guard let eligibility = dialect.editableTableSQL(table), try executeLocked(eligibility, maxRows: 1).cell(0, 0) == "YES" else {
+                throw ADBCError("CSV import requires a base table with transactional storage.")
+            }
+            _ = try executeLocked("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0", maxRows: 0)
+            let current = try transferColumns(table)
+            guard current == preview.columns, mapping.compactMap({ $0 }).allSatisfy({ name in current.contains { $0.name == name && !$0.computed } }) else {
+                throw ADBCError("Target columns changed or mapping includes a generated column. Preview again.")
+            }
+            try transferStream("SELECT * FROM \(dialect.qualifiedName(of: table)) LIMIT 0") { schemaStream in
+                var input = ArrowArrayStream()
+                var scope: TransferScope?
+                defer { cadbc_stream_release(&input); withExtendedLifetime(scope) {} }
+                try withUnsafeMutablePointer(to: &schemaStream) { schemaAddress in
+                    try withUnsafeMutablePointer(to: &input) { outputAddress in
+                        scope = try runtime.scope([
+                            "mode": "reader", "path": url.path, "options": try options.jsonObject(),
+                            "fingerprint": preview.fingerprint, "schema": preview.schema,
+                            "mapping": mapping.map { $0 as Any? ?? NSNull() },
+                            "schemaStream": UInt(bitPattern: schemaAddress), "outputStream": UInt(bitPattern: outputAddress)
+                        ], progress: progress)
+                    }
+                }
+                var rows: Int64 = -1
+                var error: UnsafeMutablePointer<CChar>?
+                guard cadbc_ingest_append(session, table.name, dialect == .mysql ? table.catalog : nil,
+                                          dialect == .postgres ? table.schema : nil, &input, &rows, &error) == ADBC_STATUS_OK else {
+                    throw takeError(error, fallback: "ADBC bulk import failed")
+                }
+                guard rows < 0 || rows == progress.rows else { throw ADBCError("Driver row count did not match the CSV. Import rolled back.") }
+            }
+            guard !progress.isCancelled else { throw ADBCError("Import cancelled.") }
+            _ = try executeLocked("COMMIT", maxRows: 0)
+            return progress.rows
+        } catch {
+            do { _ = try executeLocked("ROLLBACK", maxRows: 0) } catch { transactionSettingsUnknown = true }
+            throw error
+        }
+    }
+
     /// Probe only an idle connection; never queue behind a running query.
     /// A false return means a query owns the connection, not that it is lost.
     public func checkHealth() throws -> Bool {

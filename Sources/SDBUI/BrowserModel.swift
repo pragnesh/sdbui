@@ -946,6 +946,7 @@ final class BrowserModel {
         queryStatus = nil
         queryErrorLocation = nil
         tables = []
+        transferPoll?.cancel(); transferPoll = nil; transferProgress?.cancel(); transferProgress = nil; csvPreview = nil; transferVisible = false
         rowEditDraft = nil; editMetadata = [:]; editMetadataLoading = []; editMetadataError = ""
         contentTotal = nil; isCounting = false; pinnedTableIDs = []; contentExpression = nil
         rowEstimates = [:]
@@ -1639,6 +1640,7 @@ final class BrowserModel {
     func cancelQuery() {
         guard let connection, isRunning else { return }
         queryCancellationRequested = true
+        transferProgress?.cancel()
         if isBrowsing { statusMessage = "Cancelling…" }
         else { queryStatus = QueryStatus(text: "Cancelling…") }
         Task.detached {
@@ -1658,6 +1660,105 @@ final class BrowserModel {
         let seconds = Double(elapsed.components.attoseconds) / 1e18
             + Double(elapsed.components.seconds)
         return String(format: "%.3fs", seconds)
+    }
+
+    // MARK: Whole-table transfers
+
+    @ObservationIgnored var transferVisible = false { didSet { stateChanged() } }
+    @ObservationIgnored var transferFormat = TableExportFormat.csv { didSet { stateChanged() } }
+    @ObservationIgnored var transferFiltered = false { didSet { stateChanged() } }
+    @ObservationIgnored var csvOptions = CSVImportOptions() { didSet { csvPreview = nil; stateChanged() } }
+    @ObservationIgnored var csvURL: URL? { didSet { csvPreview = nil; stateChanged() } }
+    @ObservationIgnored private(set) var csvPreview: CSVImportPreview? { didSet { stateChanged() } }
+    @ObservationIgnored var csvMapping: [String?] = [] { didSet { stateChanged() } }
+    @ObservationIgnored private var csvPreviewTable: String?
+    @ObservationIgnored private var csvPreviewSession: Int = 0
+    @ObservationIgnored private var csvPreviewDocument: UUID?
+    @ObservationIgnored private var transferProgress: TransferProgress?
+    @ObservationIgnored private(set) var transferMessage = "" { didSet { stateChanged() } }
+    @ObservationIgnored private var transferPoll: Task<Void, Never>?
+    var canImportCSV: Bool { canRun && !connectionSafety.readOnly && selectedTable != nil && dialect != .generic }
+    var canConfirmCSV: Bool {
+        canImportCSV && csvPreview != nil && csvPreviewTable == selectedTableID && csvPreviewSession == sessionRevision && csvPreviewDocument == activeQueryDocument.id &&
+        !csvMapping.compactMap({ $0 }).isEmpty && Set(csvMapping.compactMap { $0 }).count == csvMapping.compactMap({ $0 }).count
+    }
+    func toggleTransfers() {
+        guard !isRunning else { return }
+        transferVisible.toggle(); rowEditDraft = nil
+    }
+    private func startTransfer(_ message: String) -> TransferProgress {
+        let progress = TransferProgress()
+        transferProgress = progress; isRunning = true; errorMessage = nil
+        queryCancellationRequested = false; transferMessage = message
+        transferPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { break }
+                self?.transferMessage = "\(message) · \(progress.rows) rows processed"
+            }
+        }
+        return progress
+    }
+    private func finishTransfer(_ message: String) {
+        transferPoll?.cancel(); transferPoll = nil; transferProgress = nil
+        isRunning = false; transferMessage = message; statusMessage = message
+    }
+    func exportTable(to url: URL) {
+        guard canRun, let connection, let table = selectedTable else { return }
+        let revision = sessionRevision, format = transferFormat
+        let expression = transferFiltered && isBrowsing ? effectiveFilter : nil
+        let order = isBrowsing ? contentSort.flatMap { sort in contentColumns.indices.contains(sort.column) ? (column: contentColumns[sort.column], ascending: sort.ascending) : nil } : nil
+        let readOnly = connectionSafety.readOnly
+        let progress = startTransfer("Exporting \(table.name)")
+        Task {
+            let outcome = await Task.detached { () -> Result<Int64, Error> in
+                Result { try connection.exportTable(table, to: url, format: format, expression: expression, orderBy: order, readOnly: readOnly, runtime: TransferRuntime.discover(), progress: progress) }
+            }.value
+            guard revision == sessionRevision, self.connection === connection else { return }
+            switch outcome {
+            case .success(let rows): finishTransfer("Exported \(rows) rows to \(url.lastPathComponent)")
+            case .failure(let error): finishTransfer("Export failed"); errorMessage = "\(error)"; handleConnectionFailure(error, from: connection)
+            }
+        }
+    }
+    func previewCSV() {
+        guard canImportCSV, let connection, let table = selectedTable, let url = csvURL else { return }
+        csvPreview = nil
+        let revision = sessionRevision, document = activeQueryDocument.id, options = csvOptions
+        let progress = startTransfer("Previewing CSV")
+        Task {
+            let outcome = await Task.detached { () -> Result<CSVImportPreview, Error> in
+                Result { try connection.previewCSV(url, into: table, options: options, runtime: TransferRuntime.discover(), progress: progress) }
+            }.value
+            guard revision == sessionRevision, self.connection === connection else { return }
+            finishTransfer("CSV preview ready")
+            guard selectedTableID == table.id, document == activeQueryDocument.id, csvOptions == options, csvURL == url else { return }
+            switch outcome {
+            case .success(let preview):
+                csvPreview = preview; csvPreviewTable = table.id; csvPreviewSession = revision; csvPreviewDocument = document
+                csvMapping = preview.headers.map { header in preview.columns.first { $0.name == header && !$0.computed && !$0.identity }?.name }
+            case .failure(let error): transferMessage = "Preview failed"; errorMessage = "\(error)"; handleConnectionFailure(error, from: connection)
+            }
+        }
+    }
+    func confirmCSVImport() {
+        guard canConfirmCSV, let connection, let table = selectedTable, let preview = csvPreview, let url = csvURL else { return }
+        let revision = sessionRevision, options = csvOptions, mapping = csvMapping, document = activeQueryDocument.id
+        csvPreview = nil
+        let progress = startTransfer("Importing into \(table.name)")
+        Task {
+            let outcome = await Task.detached { () -> Result<Int64, Error> in
+                Result { try connection.importCSV(url, into: table, options: options, preview: preview, mapping: mapping, runtime: TransferRuntime.discover(), progress: progress) }
+            }.value
+            guard revision == sessionRevision, self.connection === connection else { return }
+            switch outcome {
+            case .success(let rows):
+                finishTransfer("Imported \(rows) rows into \(table.name)")
+                contentTotal = nil; rowEstimates.removeValue(forKey: table.id); editMetadata.removeValue(forKey: table.id)
+                if selectedTableID == table.id, activeQueryDocument.id == document, isBrowsing { loadContent(table) }
+            case .failure(let error): finishTransfer("Import failed; transaction rolled back"); errorMessage = "\(error)"; handleConnectionFailure(error, from: connection)
+            }
+        }
     }
 
     // MARK: Export
