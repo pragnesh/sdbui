@@ -18,7 +18,7 @@ arch=$(uname -m)
 case "$arch" in arm64|x86_64) ;; *) echo "Unsupported architecture: $arch" >&2; exit 2 ;; esac
 if [[ $build == 1 ]]; then swift build -c release --product sdbui; fi
 bin_dir=$(swift build -c release --show-bin-path)
-lipo -verify_arch "$arch" "$bin_dir/sdbui"
+lipo "$bin_dir/sdbui" -verify_arch "$arch"
 name="sdbui-$version-macos-$arch"
 stage="$PWD/dist/$name"
 app="$stage/SDB Query Browser.app"
