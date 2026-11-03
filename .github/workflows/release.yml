@@ -59,7 +59,8 @@ jobs:
             libgcc-13-dev libncurses-dev libpython3-dev libsqlite3-dev \
             libstdc++-13-dev libxml2-dev libz3-dev pkg-config tzdata unzip \
             zlib1g-dev libgtk-4-dev librsvg2-common libgdk-pixbuf2.0-bin \
-            xvfb xauth python3-gi python3-pil gir1.2-atspi-2.0
+            xvfb xauth python3-gi python3-pil gir1.2-atspi-2.0 \
+            at-spi2-core dbus-daemon dbus-bin libxtst6
       - name: Install Swift
         run: |
           curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"

@@ -477,7 +477,9 @@ scripts/test-quality-ui.sh
 ```
 
 The pinned versions are PostgreSQL/SQLite 1.13.0, MySQL 0.7.1 and DuckDB 2.0.0.
-The UI script needs Xvfb, xauth, Python GI/Pillow and the AT-SPI typelib, and
+The UI script needs Xvfb, xauth, Python GI/Pillow, `gir1.2-atspi-2.0`,
+`at-spi2-core` (the accessibility bus service), `dbus-daemon`, `dbus-bin` and
+`libxtst6`, and
 uses isolated profile/session/preferences directories. For network tests, set
 `SDBUI_TEST_POSTGRES_URI` and `SDBUI_TEST_MYSQL_URI` to disposable test databases;
 `SDBUI_REQUIRE_NETWORK_DRIVERS=1` makes missing network fixtures fail.
